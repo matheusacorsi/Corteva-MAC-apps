@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import io
+import zipfile
 from PIL import Image, ImageOps
 import matplotlib
 matplotlib.use("Agg")
@@ -35,6 +36,12 @@ if 'm1_out_dir' not in st.session_state:
     st.session_state.m1_out_dir = ''
 if 'm1_out_dir_text' not in st.session_state:
     st.session_state.m1_out_dir_text = st.session_state.m1_out_dir
+if 'm1_output_mode' not in st.session_state:
+    st.session_state.m1_output_mode = "Download ZIP (Deployment-safe)"
+if 'm1_zip_bytes' not in st.session_state:
+    st.session_state.m1_zip_bytes = None
+if 'm1_zip_name' not in st.session_state:
+    st.session_state.m1_zip_name = "clipped_discs.zip"
 if 'm2_preview_idx' not in st.session_state:
     st.session_state.m2_preview_idx = 0
 if 'm3_in_dir' not in st.session_state:
@@ -404,24 +411,37 @@ with tab1:
 
     m1_files = st.file_uploader("Choose Input Image(s)", type=ALLOWED_TYPES, key="m1_files", accept_multiple_files=True)
 
-    # Output directory with folder-browser button
-    ocol1, ocol2 = st.columns([5, 1])
-    with ocol2:
-        st.write("")
-        st.write("")
-        if st.button("Browse...", key='m1_browse'):
-            folder = browse_folder(st.session_state.m1_out_dir_text)
-            if folder:
-                st.session_state.m1_out_dir = folder
-                st.session_state.m1_out_dir_text = folder
-                st.rerun()
-    with ocol1:
-        st.text_input(
-            "Output Directory",
-            placeholder="e.g. C:/Outputs/Circles",
-            key='m1_out_dir_text'
-        )
-        st.session_state.m1_out_dir = st.session_state.m1_out_dir_text
+    st.radio(
+        "Output Destination",
+        ["Download ZIP (Deployment-safe)", "Save to Folder (Local/Desktop)"],
+        key="m1_output_mode",
+        horizontal=True,
+        help="Use Download ZIP when deployed on Streamlit. Folder save works in local desktop runs.",
+    )
+
+    if st.session_state.m1_output_mode == "Save to Folder (Local/Desktop)":
+        # Output directory with folder-browser button
+        ocol1, ocol2 = st.columns([5, 1])
+        with ocol2:
+            st.write("")
+            st.write("")
+            if st.button("Browse...", key='m1_browse'):
+                folder = browse_folder(st.session_state.m1_out_dir_text)
+                if folder:
+                    st.session_state.m1_out_dir = folder
+                    st.session_state.m1_out_dir_text = folder
+                    st.rerun()
+                else:
+                    st.info("Folder picker is unavailable in browser deployments. Use 'Download ZIP (Deployment-safe)'.")
+        with ocol1:
+            st.text_input(
+                "Output Directory",
+                placeholder="e.g. C:/Outputs/Circles",
+                key='m1_out_dir_text'
+            )
+            st.session_state.m1_out_dir = st.session_state.m1_out_dir_text
+    else:
+        st.caption("Deployment-safe mode: processed discs will be packaged as a ZIP for direct browser download.")
 
     st.subheader("Processing Options")
     col1, col2, col3 = st.columns(3)
@@ -515,55 +535,91 @@ with tab1:
 
     # Batch save
     if save_clicked:
-        if not st.session_state.m1_out_dir:
-            st.warning("Please provide an output directory path.")
-        elif not m1_files:
+        st.session_state.m1_zip_bytes = None
+
+        if not m1_files:
             st.warning("Please upload at least one image to process.")
+        elif st.session_state.m1_output_mode == "Save to Folder (Local/Desktop)" and not st.session_state.m1_out_dir:
+            st.warning("Please provide an output directory path.")
         else:
-            out_path = Path(st.session_state.m1_out_dir)
-            ensure_dir(out_path)
+            save_to_folder = st.session_state.m1_output_mode == "Save to Folder (Local/Desktop)"
+            if save_to_folder:
+                out_path = Path(st.session_state.m1_out_dir)
+                ensure_dir(out_path)
+                zip_ref = None
+            else:
+                zip_buffer = io.BytesIO()
+                zip_ref = zipfile.ZipFile(zip_buffer, mode='w', compression=zipfile.ZIP_DEFLATED)
+
             total_saved  = 0
             progress_bar = st.progress(0)
             status_text  = st.empty()
             shave_factor = 1.0 - (st.session_state.clip_params['edge_shave_pct'] / 100.0)
 
-            for img_idx, file_obj in enumerate(m1_files):
-                status_text.text(f"Processing image {img_idx + 1}/{len(m1_files)}: {file_obj.name}")
-                img_bgr, img_alpha = load_bgr_alpha_bytes(file_obj.getvalue())
-                h, w = img_bgr.shape[:2]
+            try:
+                for img_idx, file_obj in enumerate(m1_files):
+                    status_text.text(f"Processing image {img_idx + 1}/{len(m1_files)}: {file_obj.name}")
+                    img_bgr, img_alpha = load_bgr_alpha_bytes(file_obj.getvalue())
+                    h, w = img_bgr.shape[:2]
 
-                current_circles = auto_robust_disc_detection(
-                    img_bgr, st.session_state.clip_params['nonoverlap_gap']
-                )
-                if not current_circles:
-                    continue
+                    current_circles = auto_robust_disc_detection(
+                        img_bgr, st.session_state.clip_params['nonoverlap_gap']
+                    )
+                    if not current_circles:
+                        continue
 
-                circles_to_save = sort_circles_column_major(current_circles)
+                    circles_to_save = sort_circles_column_major(current_circles)
 
-                for disc_idx, c in enumerate(circles_to_save, start=1):
-                    x, y = c['x'], c['y']
-                    r    = int(c['r'] * shave_factor)
-                    x0, y0 = max(0, x - r), max(0, y - r)
-                    x1, y1 = min(w, x + r), min(h, y + r)
-                    roi_bgr   = img_bgr[y0:y1, x0:x1].copy()
-                    roi_alpha = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
-                    cv2.circle(roi_alpha, (x - x0, y - y0), r, 255, thickness=-1)
-                    if st.session_state.clip_params['refine_edges']:
-                        roi_alpha = refine_alpha_mask(roi_bgr, roi_alpha)
-                    if img_alpha is not None:
-                        roi_alpha = cv2.bitwise_and(roi_alpha, img_alpha[y0:y1, x0:x1])
-                    bgra      = np.dstack([roi_bgr, roi_alpha])
-                    base_name = Path(file_obj.name).stem
-                    file_path = out_path / f"{base_name}_disc_{disc_idx:03d}.png"
-                    cv2.imwrite(str(file_path), bgra)
-                    total_saved += 1
+                    for disc_idx, c in enumerate(circles_to_save, start=1):
+                        x, y = c['x'], c['y']
+                        r    = int(c['r'] * shave_factor)
+                        x0, y0 = max(0, x - r), max(0, y - r)
+                        x1, y1 = min(w, x + r), min(h, y + r)
+                        roi_bgr   = img_bgr[y0:y1, x0:x1].copy()
+                        roi_alpha = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
+                        cv2.circle(roi_alpha, (x - x0, y - y0), r, 255, thickness=-1)
+                        if st.session_state.clip_params['refine_edges']:
+                            roi_alpha = refine_alpha_mask(roi_bgr, roi_alpha)
+                        if img_alpha is not None:
+                            roi_alpha = cv2.bitwise_and(roi_alpha, img_alpha[y0:y1, x0:x1])
+                        bgra      = np.dstack([roi_bgr, roi_alpha])
+                        base_name = Path(file_obj.name).stem
+                        out_name = f"{base_name}_disc_{disc_idx:03d}.png"
 
-                progress_bar.progress((img_idx + 1) / len(m1_files))
+                        if save_to_folder:
+                            file_path = out_path / out_name
+                            cv2.imwrite(str(file_path), bgra)
+                        else:
+                            ok, enc = cv2.imencode('.png', bgra)
+                            if ok:
+                                zip_ref.writestr(out_name, enc.tobytes())
+                        total_saved += 1
+
+                    progress_bar.progress((img_idx + 1) / len(m1_files))
+            finally:
+                if zip_ref is not None:
+                    zip_ref.close()
 
             status_text.text("Batch processing complete!")
-            st.success(
-                f"Saved {total_saved} disc(s) from {len(m1_files)} image(s) → {st.session_state.m1_out_dir}"
-            )
+            if save_to_folder:
+                st.success(
+                    f"Saved {total_saved} disc(s) from {len(m1_files)} image(s) → {st.session_state.m1_out_dir}"
+                )
+            else:
+                zip_buffer.seek(0)
+                st.session_state.m1_zip_bytes = zip_buffer.getvalue()
+                st.session_state.m1_zip_name = "clipped_discs.zip"
+                st.success(f"Prepared {total_saved} disc(s) from {len(m1_files)} image(s). Download the ZIP below.")
+
+    if st.session_state.m1_zip_bytes:
+        st.download_button(
+            "Download Clipped Discs ZIP",
+            data=st.session_state.m1_zip_bytes,
+            file_name=st.session_state.m1_zip_name,
+            mime="application/zip",
+            use_container_width=True,
+            key="m1_download_zip",
+        )
 
 
 # ═══════════════════════════
