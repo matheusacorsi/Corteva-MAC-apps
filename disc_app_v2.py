@@ -6,6 +6,8 @@ import pandas as pd
 from pathlib import Path
 import io
 import zipfile
+import os
+import re
 from PIL import Image, ImageOps
 import matplotlib
 matplotlib.use("Agg")
@@ -73,6 +75,16 @@ ALLOWED_TYPES = ["png", "jpg", "jpeg", "bmp", "tif", "tiff", "heic", "jfif"]
 # ----------------------------
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
+
+def sanitize_dir_input(path_text: str) -> str:
+    """Trim surrounding whitespace/quotes from a manually pasted directory path."""
+    if not path_text:
+        return ""
+    return path_text.strip().strip('"').strip("'")
+
+def looks_like_windows_drive_path(path_text: str) -> bool:
+    """Detect paths like C:\\... so we can prevent misleading saves on non-Windows hosts."""
+    return bool(re.match(r"^[a-zA-Z]:[\\/]", path_text or ""))
 
 def _convert_pil_to_bgr_alpha(pil_img):
     pil_img = ImageOps.exif_transpose(pil_img)
@@ -451,6 +463,8 @@ with tab1:
     )
 
     if st.session_state.m1_output_mode == "Save to Folder (Local/Desktop)":
+        if os.name != 'nt':
+            st.warning("This app is not running on Windows. Folder saves are written on the host machine, not your local browser device. Prefer 'Download ZIP (Deployment-safe)'.")
         # Output directory with folder-browser button
         ocol1, ocol2 = st.columns([5, 1])
         with ocol2:
@@ -470,7 +484,7 @@ with tab1:
                 placeholder="e.g. C:/Outputs/Circles",
                 key='m1_out_dir_text'
             )
-            st.session_state.m1_out_dir = st.session_state.m1_out_dir_text
+            st.session_state.m1_out_dir = sanitize_dir_input(st.session_state.m1_out_dir_text)
     else:
         st.caption("Deployment-safe mode: processed discs will be packaged as a ZIP for direct browser download.")
 
@@ -570,19 +584,30 @@ with tab1:
 
         if not m1_files:
             st.warning("Please upload at least one image to process.")
-        elif st.session_state.m1_output_mode == "Save to Folder (Local/Desktop)" and not st.session_state.m1_out_dir:
+        elif st.session_state.m1_output_mode == "Save to Folder (Local/Desktop)" and not sanitize_dir_input(st.session_state.m1_out_dir):
             st.warning("Please provide an output directory path.")
         else:
             save_to_folder = st.session_state.m1_output_mode == "Save to Folder (Local/Desktop)"
+            abort_run = False
+            out_path = None
             if save_to_folder:
-                out_path = Path(st.session_state.m1_out_dir)
-                ensure_dir(out_path)
+                m1_dir = sanitize_dir_input(st.session_state.m1_out_dir)
+                if (os.name != 'nt') and looks_like_windows_drive_path(m1_dir):
+                    st.error("This app instance is not running on Windows, so a Windows path cannot be used here. Use 'Download ZIP (Deployment-safe)'.")
+                    abort_run = True
+                else:
+                    out_path = Path(m1_dir).expanduser()
+                    ensure_dir(out_path)
                 zip_ref = None
             else:
                 zip_buffer = io.BytesIO()
                 zip_ref = zipfile.ZipFile(zip_buffer, mode='w', compression=zipfile.ZIP_DEFLATED)
 
+            if abort_run:
+                st.stop()
+
             total_saved  = 0
+            failed_saved = 0
             progress_bar = st.progress(0)
             status_text  = st.empty()
             shave_factor = 1.0 - (st.session_state.clip_params['edge_shave_pct'] / 100.0)
@@ -619,11 +644,15 @@ with tab1:
 
                         if save_to_folder:
                             file_path = out_path / out_name
-                            cv2.imwrite(str(file_path), bgra)
+                            ok = cv2.imwrite(str(file_path), bgra)
+                            if not ok:
+                                failed_saved += 1
                         else:
                             ok, enc = cv2.imencode('.png', bgra)
                             if ok:
                                 zip_ref.writestr(out_name, enc.tobytes())
+                            else:
+                                failed_saved += 1
                         total_saved += 1
 
                     progress_bar.progress((img_idx + 1) / len(m1_files))
@@ -633,9 +662,12 @@ with tab1:
 
             status_text.text("Batch processing complete!")
             if save_to_folder:
+                resolved_out = str(out_path.resolve()) if out_path is not None else str(st.session_state.m1_out_dir)
                 st.success(
-                    f"Saved {total_saved} disc(s) from {len(m1_files)} image(s) → {st.session_state.m1_out_dir}"
+                    f"Saved {total_saved - failed_saved} disc(s) from {len(m1_files)} image(s) → {resolved_out}"
                 )
+                if failed_saved:
+                    st.warning(f"{failed_saved} file(s) could not be written. Check directory permissions and path validity.")
             else:
                 zip_buffer.seek(0)
                 st.session_state.m1_zip_bytes = zip_buffer.getvalue()
@@ -824,25 +856,45 @@ with tab3:
         help="Use Download ZIP when deployed on Streamlit. Folder save works in local desktop runs.",
     )
 
-    # Input folder with browser
-    incol1, incol2 = st.columns([5, 1])
-    with incol2:
-        st.write("")
-        st.write("")
-        if st.button("Browse...", key='m3_in_browse'):
-            folder = browse_folder(st.session_state.m3_in_text)
-            if folder:
-                st.session_state.m3_in_dir = folder
-                st.session_state.m3_in_text = folder
-                st.rerun()
-    with incol1:
-        st.text_input(
-            "Input Folder Path",
-            placeholder="e.g. C:/Images/Raw", key="m3_in_text"
+    m3_input_mode = st.radio(
+        "Input Source",
+        ["Input Folder (Local/Desktop)", "Upload Images/ZIP (Deployment-safe)"],
+        key="m3_input_mode",
+        horizontal=True,
+    )
+
+    m3_uploaded_files = None
+    if m3_input_mode == "Input Folder (Local/Desktop)":
+        # Input folder with browser
+        incol1, incol2 = st.columns([5, 1])
+        with incol2:
+            st.write("")
+            st.write("")
+            if st.button("Browse...", key='m3_in_browse'):
+                folder = browse_folder(st.session_state.m3_in_text)
+                if folder:
+                    st.session_state.m3_in_dir = folder
+                    st.session_state.m3_in_text = folder
+                    st.rerun()
+                else:
+                    st.info("Folder picker is unavailable in browser deployments. Use 'Upload Images/ZIP (Deployment-safe)'.")
+        with incol1:
+            st.text_input(
+                "Input Folder Path",
+                placeholder="e.g. C:/Images/Raw", key="m3_in_text"
+            )
+            st.session_state.m3_in_dir = sanitize_dir_input(st.session_state.m3_in_text)
+    else:
+        m3_uploaded_files = st.file_uploader(
+            "Upload image(s) or a ZIP from Module 1",
+            type=ALLOWED_TYPES + ["zip"],
+            accept_multiple_files=True,
+            key="m3_upload_files",
         )
-        st.session_state.m3_in_dir = st.session_state.m3_in_text
 
     if st.session_state.m3_output_mode == "Save to Folder (Local/Desktop)":
+        if os.name != 'nt':
+            st.warning("This app is not running on Windows. Folder saves are written on the host machine, not your local browser device. Prefer 'Download ZIP (Deployment-safe)'.")
         # Output folder with browser
         outcol1, outcol2 = st.columns([5, 1])
         with outcol2:
@@ -861,7 +913,7 @@ with tab3:
                 "Output Folder Path",
                 placeholder="e.g. C:/Images/Processed", key="m3_out_text"
             )
-            st.session_state.m3_out_dir = st.session_state.m3_out_text
+            st.session_state.m3_out_dir = sanitize_dir_input(st.session_state.m3_out_text)
     else:
         st.caption("Deployment-safe mode: Module 3 outputs will be packaged as a ZIP for direct browser download.")
 
@@ -870,126 +922,159 @@ with tab3:
     if st.button("Run Batch"):
         st.session_state.m3_zip_bytes = None
         save_to_folder = st.session_state.m3_output_mode == "Save to Folder (Local/Desktop)"
+        use_folder_input = m3_input_mode == "Input Folder (Local/Desktop)"
 
-        if not st.session_state.m3_in_dir:
+        if use_folder_input and not st.session_state.m3_in_dir:
             st.warning("Please specify the input directory path.")
+        elif (not use_folder_input) and not m3_uploaded_files:
+            st.warning("Please upload at least one image or ZIP file.")
         elif save_to_folder and not st.session_state.m3_out_dir:
             st.warning("Please specify the output directory path.")
         else:
-            in_path  = Path(st.session_state.m3_in_dir)
-            if not in_path.exists() or not in_path.is_dir():
-                st.error("Input directory does not exist.")
-            else:
-                if save_to_folder:
-                    out_path = Path(st.session_state.m3_out_dir)
-                    ensure_dir(out_path)
-                    saved_imgs_dir = out_path / "classified_images"
-                    ensure_dir(saved_imgs_dir)
-                    zip_ref = None
-                    zip_buffer = None
-                else:
-                    zip_buffer = io.BytesIO()
-                    zip_ref = zipfile.ZipFile(zip_buffer, mode='w', compression=zipfile.ZIP_DEFLATED)
-
+            input_items = []
+            if use_folder_input:
+                in_path = Path(st.session_state.m3_in_dir).expanduser()
+                if (os.name != 'nt') and looks_like_windows_drive_path(st.session_state.m3_in_dir):
+                    st.error("This app instance is not running on Windows, so a Windows input path cannot be used here. Use 'Upload Images/ZIP (Deployment-safe)'.")
+                    st.stop()
+                if not in_path.exists() or not in_path.is_dir():
+                    st.error("Input directory does not exist.")
+                    st.stop()
                 extensions = [
                     "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tif", "*.tiff", "*.heic", "*.jfif",
                     "*.PNG", "*.JPG", "*.JPEG", "*.BMP", "*.TIF", "*.TIFF", "*.HEIC", "*.JFIF"
                 ]
                 images = sorted([p for ext in extensions for p in in_path.glob(ext)])
-                if not images:
-                    if zip_ref is not None:
-                        zip_ref.close()
-                    st.error("No images found in the input folder.")
-                else:
-                    radius_cm       = m3_diameter / 2.0
-                    total_area_cm2  = np.pi * (radius_cm ** 2)
-
-                    records      = []
-                    progress_bar = st.progress(0)
-                    status_text  = st.empty()
-                    log_area     = st.empty()
-                    logs = [f"Assuming total disk area: {total_area_cm2:.3f} cm² (diameter {m3_diameter} cm)"]
-
-                    params = st.session_state.hsv_params
-                    lower  = np.array([params['h_min'], params['s_min'], params['v_min']])
-                    upper  = np.array([params['h_max'], params['s_max'], params['v_max']])
-
-                    try:
-                        for i, img_path in enumerate(images):
-                            try:
-                                bgr, alpha = load_bgr_alpha_path(img_path)
-                                hsv        = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-
-                                hsv_match_mask = cv2.inRange(hsv, lower, upper)
-                                visible_mask   = (alpha > 128)
-
-                                output_bgr = np.full(bgr.shape, (200, 200, 200), dtype=np.uint8)
-                                blue_mask  = visible_mask & (hsv_match_mask > 0)
-                                white_mask = visible_mask & (hsv_match_mask == 0)
-                                output_bgr[white_mask] = [255, 255, 255]
-                                output_bgr[blue_mask]  = [255, 0, 0]
-
-                                roi_total  = np.count_nonzero(visible_mask)
-                                blue_pct   = (np.count_nonzero(blue_mask)  / roi_total * 100) if roi_total else 0
-                                white_pct  = (np.count_nonzero(white_mask) / roi_total * 100) if roi_total else 0
-
-                                classified_area_cm2     = (blue_pct  / 100.0) * total_area_cm2
-                                non_classified_area_cm2 = (white_pct / 100.0) * total_area_cm2
-
-                                out_name = f"{img_path.stem}_classified.png"
-                                if save_to_folder:
-                                    out_img_path = saved_imgs_dir / out_name
-                                    save_comparison_plot(bgr, output_bgr, white_pct, blue_pct, out_img_path)
-                                else:
-                                    plot_bytes = build_comparison_plot_bytes(bgr, output_bgr, white_pct, blue_pct)
-                                    zip_ref.writestr(f"classified_images/{out_name}", plot_bytes)
-
-                                records.append({
-                                    "image": img_path.name,
-                                    "classified_blue_pct": blue_pct,
-                                    "classified_area_cm2": classified_area_cm2,
-                                    "non_classified_white_pct": white_pct,
-                                    "non_classified_area_cm2": non_classified_area_cm2
-                                })
-                                logs.append(
-                                    f"OK: {img_path.name} | Blue {blue_pct:.2f}% ({classified_area_cm2:.3f} cm²)"
-                                )
-                            except Exception as e:
-                                logs.append(f"ERROR: {img_path.name}: {e}")
-
-                            progress_bar.progress((i + 1) / len(images))
-                            status_text.text(f"Processed {i + 1}/{len(images)}")
-                            log_area.text("\n".join(logs[-10:]))
-                    finally:
-                        if zip_ref is not None:
-                            zip_ref.close()
-
-                    if records:
-                        df = pd.DataFrame(records)[[
-                            "image", "classified_blue_pct", "classified_area_cm2",
-                            "non_classified_white_pct", "non_classified_area_cm2"
-                        ]]
-                        if save_to_folder:
-                            excel_path = out_path / "summary.xlsx"
-                            df.to_excel(excel_path, index=False, float_format="%.3f")
-                            st.success(f"Processed {len(records)} image(s). Summary saved to: {excel_path}")
-                        else:
-                            excel_buffer = io.BytesIO()
-                            df.to_excel(excel_buffer, index=False, float_format="%.3f")
-                            excel_buffer.seek(0)
-                            final_zip_buffer = io.BytesIO()
-                            with zipfile.ZipFile(final_zip_buffer, mode='w', compression=zipfile.ZIP_DEFLATED) as final_zip:
-                                with zipfile.ZipFile(io.BytesIO(zip_buffer.getvalue()), mode='r') as temp_zip:
-                                    for info in temp_zip.infolist():
-                                        final_zip.writestr(info.filename, temp_zip.read(info.filename))
-                                final_zip.writestr("summary.xlsx", excel_buffer.getvalue())
-
-                            final_zip_buffer.seek(0)
-                            st.session_state.m3_zip_bytes = final_zip_buffer.getvalue()
-                            st.session_state.m3_zip_name = "module3_results.zip"
-                            st.success(f"Processed {len(records)} image(s). Download the ZIP below.")
+                input_items = [{"name": p.name, "path": p} for p in images]
+            else:
+                for uf in (m3_uploaded_files or []):
+                    low_name = uf.name.lower()
+                    if low_name.endswith('.zip'):
+                        try:
+                            with zipfile.ZipFile(io.BytesIO(uf.getvalue()), mode='r') as zf:
+                                for info in zf.infolist():
+                                    if info.is_dir():
+                                        continue
+                                    ext = Path(info.filename).suffix.lower().lstrip('.')
+                                    if ext in ALLOWED_TYPES:
+                                        input_items.append({
+                                            "name": Path(info.filename).name,
+                                            "bytes": zf.read(info.filename)
+                                        })
+                        except Exception as e:
+                            st.warning(f"Could not read ZIP {uf.name}: {e}")
                     else:
-                        st.warning("Batch finished, but no valid images were processed.")
+                        input_items.append({"name": uf.name, "bytes": uf.getvalue()})
+
+            if not input_items:
+                st.error("No valid input images found.")
+                st.stop()
+
+            if save_to_folder:
+                if (os.name != 'nt') and looks_like_windows_drive_path(st.session_state.m3_out_dir):
+                    st.error("This app instance is not running on Windows, so a Windows output path cannot be used here. Use 'Download ZIP (Deployment-safe)'.")
+                    st.stop()
+                out_path = Path(st.session_state.m3_out_dir).expanduser()
+                ensure_dir(out_path)
+                saved_imgs_dir = out_path / "classified_images"
+                ensure_dir(saved_imgs_dir)
+                zip_ref = None
+                zip_buffer = None
+            else:
+                zip_buffer = io.BytesIO()
+                zip_ref = zipfile.ZipFile(zip_buffer, mode='w', compression=zipfile.ZIP_DEFLATED)
+
+            radius_cm       = m3_diameter / 2.0
+            total_area_cm2  = np.pi * (radius_cm ** 2)
+
+            records      = []
+            progress_bar = st.progress(0)
+            status_text  = st.empty()
+            log_area     = st.empty()
+            logs = [f"Assuming total disk area: {total_area_cm2:.3f} cm² (diameter {m3_diameter} cm)"]
+
+            params = st.session_state.hsv_params
+            lower  = np.array([params['h_min'], params['s_min'], params['v_min']])
+            upper  = np.array([params['h_max'], params['s_max'], params['v_max']])
+
+            try:
+                for i, item in enumerate(input_items):
+                    item_name = item["name"]
+                    try:
+                        if "path" in item:
+                            bgr, alpha = load_bgr_alpha_path(item["path"])
+                        else:
+                            bgr, alpha = load_bgr_alpha_bytes(item["bytes"])
+
+                        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+                        hsv_match_mask = cv2.inRange(hsv, lower, upper)
+                        visible_mask   = (alpha > 128)
+
+                        output_bgr = np.full(bgr.shape, (200, 200, 200), dtype=np.uint8)
+                        blue_mask  = visible_mask & (hsv_match_mask > 0)
+                        white_mask = visible_mask & (hsv_match_mask == 0)
+                        output_bgr[white_mask] = [255, 255, 255]
+                        output_bgr[blue_mask]  = [255, 0, 0]
+
+                        roi_total  = np.count_nonzero(visible_mask)
+                        blue_pct   = (np.count_nonzero(blue_mask)  / roi_total * 100) if roi_total else 0
+                        white_pct  = (np.count_nonzero(white_mask) / roi_total * 100) if roi_total else 0
+
+                        classified_area_cm2     = (blue_pct  / 100.0) * total_area_cm2
+                        non_classified_area_cm2 = (white_pct / 100.0) * total_area_cm2
+
+                        item_stem = Path(item_name).stem
+                        out_name = f"{item_stem}_classified.png"
+                        if save_to_folder:
+                            out_img_path = saved_imgs_dir / out_name
+                            save_comparison_plot(bgr, output_bgr, white_pct, blue_pct, out_img_path)
+                        else:
+                            plot_bytes = build_comparison_plot_bytes(bgr, output_bgr, white_pct, blue_pct)
+                            zip_ref.writestr(f"classified_images/{out_name}", plot_bytes)
+
+                        records.append({
+                            "image": item_name,
+                            "classified_blue_pct": blue_pct,
+                            "classified_area_cm2": classified_area_cm2,
+                            "non_classified_white_pct": white_pct,
+                            "non_classified_area_cm2": non_classified_area_cm2
+                        })
+                        logs.append(
+                            f"OK: {item_name} | Blue {blue_pct:.2f}% ({classified_area_cm2:.3f} cm²)"
+                        )
+                    except Exception as e:
+                        logs.append(f"ERROR: {item_name}: {e}")
+
+                    progress_bar.progress((i + 1) / len(input_items))
+                    status_text.text(f"Processed {i + 1}/{len(input_items)}")
+                    log_area.text("\n".join(logs[-10:]))
+
+                if records:
+                    df = pd.DataFrame(records)[[
+                        "image", "classified_blue_pct", "classified_area_cm2",
+                        "non_classified_white_pct", "non_classified_area_cm2"
+                    ]]
+                    if save_to_folder:
+                        excel_path = out_path / "summary.xlsx"
+                        df.to_excel(excel_path, index=False, float_format="%.3f")
+                        st.success(f"Processed {len(records)} image(s). Summary saved to: {excel_path.resolve()}")
+                    else:
+                        excel_buffer = io.BytesIO()
+                        df.to_excel(excel_buffer, index=False, float_format="%.3f")
+                        excel_buffer.seek(0)
+                        zip_ref.writestr("summary.xlsx", excel_buffer.getvalue())
+                        zip_ref.close()
+                        zip_ref = None
+
+                        zip_buffer.seek(0)
+                        st.session_state.m3_zip_bytes = zip_buffer.getvalue()
+                        st.session_state.m3_zip_name = "module3_results.zip"
+                        st.success(f"Processed {len(records)} image(s). Download the ZIP below.")
+                else:
+                    st.warning("Batch finished, but no valid images were processed.")
+            finally:
+                if zip_ref is not None:
+                    zip_ref.close()
 
     if st.session_state.m3_zip_bytes:
         st.download_button(
