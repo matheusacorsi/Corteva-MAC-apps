@@ -515,9 +515,10 @@ with tab1:
     b1, b2, b3 = st.columns([3, 3, 4])
     preview_clicked = b1.button("Preview Detection (All Images)", use_container_width=True)
     save_clicked    = b2.button("Batch Save Clipped Discs (All Images)", type="primary", use_container_width=True)
+    download_slot = b3.empty()
     with b3:
         if st.session_state.m1_zip_bytes:
-            st.download_button(
+            download_slot.download_button(
                 "Download Clipped Discs ZIP",
                 data=st.session_state.m1_zip_bytes,
                 file_name=st.session_state.m1_zip_name,
@@ -655,6 +656,15 @@ with tab1:
                 st.session_state.m1_zip_bytes = zip_buffer.getvalue()
                 st.session_state.m1_zip_name = "clipped_discs.zip"
                 st.session_state.m1_latest_discs = latest_discs
+                # Update the inline download button in the same run (no tab switching needed).
+                download_slot.download_button(
+                    "Download Clipped Discs ZIP",
+                    data=st.session_state.m1_zip_bytes,
+                    file_name=st.session_state.m1_zip_name,
+                    mime="application/zip",
+                    use_container_width=True,
+                    key="m1_download_zip_inline_after_save",
+                )
                 st.success(
                     f"Prepared {total_saved} disc(s) from {len(m1_files)} image(s). "
                     "ZIP download is available beside the save button and these files are now available to Modules 2 and 3."
@@ -741,8 +751,10 @@ with tab2:
     # keys are updated before Streamlit creates the slider widgets on this same run.
     if m2_data is not None:
         bgr_m2, alpha_m2, _ = m2_data
-        auto_col, _ = st.columns([2, 5])
-        with auto_col:
+    ctrl_col, preview_col = st.columns([2, 5], gap="large")
+
+    with ctrl_col:
+        if m2_data is not None:
             if st.button("Auto-detect Purple Parameters", use_container_width=True):
                 params = auto_detect_purple_params(bgr_m2, alpha_m2)
                 if params:
@@ -754,87 +766,84 @@ with tab2:
                 else:
                     st.warning("Not enough colored pixels detected. Please adjust sliders manually.")
 
-    # Sliders — bound directly to session-state keys for smooth dragging (no intermediate variable)
-    st.subheader("HSV Sliders")
-    scol1, scol2, scol3 = st.columns(3)
-    with scol1:
+        # Sliders — placed in the left control pane so they remain visible while viewing discs.
+        st.subheader("HSV Sliders")
         h_range = st.slider("H Range", 0, 179, key='m2_h_range')
-    with scol2:
         s_range = st.slider("S Range", 0, 255, key='m2_s_range')
-    with scol3:
         v_range = st.slider("V Range", 0, 255, key='m2_v_range')
 
-    # Keep hsv_params in sync so Module 3 picks up the latest values
-    st.session_state.hsv_params.update({
-        'h_min': h_range[0], 'h_max': h_range[1],
-        's_min': s_range[0], 's_max': s_range[1],
-        'v_min': v_range[0], 'v_max': v_range[1],
-    })
+        # Keep hsv_params in sync so Module 3 picks up the latest values
+        st.session_state.hsv_params.update({
+            'h_min': h_range[0], 'h_max': h_range[1],
+            's_min': s_range[0], 's_max': s_range[1],
+            'v_min': v_range[0], 'v_max': v_range[1],
+        })
 
-    if m2_data is not None:
-        bgr_m2, alpha_m2, hsv_m2 = m2_data
-        vis_mask = alpha_m2 > 128
+    with preview_col:
+        if m2_data is not None:
+            bgr_m2, alpha_m2, hsv_m2 = m2_data
+            vis_mask = alpha_m2 > 128
 
-        if ignore_green:
-            green_residual = compute_green_residual_mask(bgr_m2, hsv_m2, vis_mask)
-            effective_vis_mask = vis_mask & (~green_residual)
-        else:
-            green_residual = np.zeros_like(vis_mask, dtype=bool)
-            effective_vis_mask = vis_mask
+            if ignore_green:
+                green_residual = compute_green_residual_mask(bgr_m2, hsv_m2, vis_mask)
+                effective_vis_mask = vis_mask & (~green_residual)
+            else:
+                green_residual = np.zeros_like(vis_mask, dtype=bool)
+                effective_vis_mask = vis_mask
 
-        lower = np.array([h_range[0], s_range[0], v_range[0]])
-        upper = np.array([h_range[1], s_range[1], v_range[1]])
-        hsv_match_mask = cv2.inRange(hsv_m2, lower, upper)
+            lower = np.array([h_range[0], s_range[0], v_range[0]])
+            upper = np.array([h_range[1], s_range[1], v_range[1]])
+            hsv_match_mask = cv2.inRange(hsv_m2, lower, upper)
 
-        display_bgr = np.full((*bgr_m2.shape[:2], 3), (200, 200, 200), dtype=np.uint8)
-        display_bgr[vis_mask] = bgr_m2[vis_mask]
-        display_bgr[green_residual] = [180, 180, 180]
+            display_bgr = np.full((*bgr_m2.shape[:2], 3), (200, 200, 200), dtype=np.uint8)
+            display_bgr[vis_mask] = bgr_m2[vis_mask]
+            display_bgr[green_residual] = [180, 180, 180]
 
-        output_bgr = np.full_like(bgr_m2, (200, 200, 200), dtype=np.uint8)
-        blue_mask  = effective_vis_mask & (hsv_match_mask > 0)
-        white_mask = effective_vis_mask & (hsv_match_mask == 0)
-        output_bgr[white_mask] = [255, 255, 255]
-        output_bgr[blue_mask]  = [255, 0, 0]
+            output_bgr = np.full_like(bgr_m2, (200, 200, 200), dtype=np.uint8)
+            blue_mask  = effective_vis_mask & (hsv_match_mask > 0)
+            white_mask = effective_vis_mask & (hsv_match_mask == 0)
+            output_bgr[white_mask] = [255, 255, 255]
+            output_bgr[blue_mask]  = [255, 0, 0]
 
-        roi_total = np.count_nonzero(effective_vis_mask)
-        blue_pct  = (np.count_nonzero(blue_mask)  / roi_total * 100) if roi_total else 0
-        white_pct = (np.count_nonzero(white_mask) / roi_total * 100) if roi_total else 0
-        ignored_green_pct = (np.count_nonzero(green_residual) / np.count_nonzero(vis_mask) * 100) if np.count_nonzero(vis_mask) else 0
+            roi_total = np.count_nonzero(effective_vis_mask)
+            blue_pct  = (np.count_nonzero(blue_mask)  / roi_total * 100) if roi_total else 0
+            white_pct = (np.count_nonzero(white_mask) / roi_total * 100) if roi_total else 0
+            ignored_green_pct = (np.count_nonzero(green_residual) / np.count_nonzero(vis_mask) * 100) if np.count_nonzero(vis_mask) else 0
 
-        st.markdown(
-            f"**Blue (Classified):** {blue_pct:.1f}% &nbsp;&nbsp;|&nbsp;&nbsp; "
-            f"**White (Non-Classified):** {white_pct:.1f}%"
-        )
-        if ignore_green:
-            st.caption(f"Ignored residual green pixels: {ignored_green_pct:.1f}% of visible disc area")
+            st.markdown(
+                f"**Blue (Classified):** {blue_pct:.1f}% &nbsp;&nbsp;|&nbsp;&nbsp; "
+                f"**White (Non-Classified):** {white_pct:.1f}%"
+            )
+            if ignore_green:
+                st.caption(f"Ignored residual green pixels: {ignored_green_pct:.1f}% of visible disc area")
 
-        # Keep navigation right above images so users can switch without scrolling up.
-        if n_files > 1 and m2_items:
-            idx = st.session_state.m2_preview_idx
-            nav_l, nav_c, nav_r = st.columns([1, 8, 1])
-            with nav_l:
-                if st.button("◄", key='m2_prev', use_container_width=True, disabled=(idx == 0)):
-                    st.session_state.m2_preview_idx = max(0, idx - 1)
-                    st.rerun()
-            with nav_r:
-                if st.button("►", key='m2_next', use_container_width=True, disabled=(idx == n_files - 1)):
-                    st.session_state.m2_preview_idx = min(n_files - 1, idx + 1)
-                    st.rerun()
-            with nav_c:
-                st.markdown(
-                    f"<div style='text-align:center;padding-top:2px;padding-bottom:8px'>"
-                    f"Image <b>{idx + 1}</b> / {n_files} &nbsp;|&nbsp; "
-                    f"<i>{m2_items[idx]['name']}</i></div>",
-                    unsafe_allow_html=True
-                )
+            # Keep navigation right above images so users can switch without scrolling up.
+            if n_files > 1 and m2_items:
+                idx = st.session_state.m2_preview_idx
+                nav_l, nav_c, nav_r = st.columns([1, 8, 1])
+                with nav_l:
+                    if st.button("◄", key='m2_prev', use_container_width=True, disabled=(idx == 0)):
+                        st.session_state.m2_preview_idx = max(0, idx - 1)
+                        st.rerun()
+                with nav_r:
+                    if st.button("►", key='m2_next', use_container_width=True, disabled=(idx == n_files - 1)):
+                        st.session_state.m2_preview_idx = min(n_files - 1, idx + 1)
+                        st.rerun()
+                with nav_c:
+                    st.markdown(
+                        f"<div style='text-align:center;padding-top:2px;padding-bottom:8px'>"
+                        f"Image <b>{idx + 1}</b> / {n_files} &nbsp;|&nbsp; "
+                        f"<i>{m2_items[idx]['name']}</i></div>",
+                        unsafe_allow_html=True
+                    )
 
-        img_col1, img_col2 = st.columns(2)
-        with img_col1:
-            st.image(cv2.cvtColor(display_bgr, cv2.COLOR_BGR2RGB),
-                     caption="Original (ROI)", use_container_width=True)
-        with img_col2:
-            st.image(cv2.cvtColor(output_bgr, cv2.COLOR_BGR2RGB),
-                     caption="Processed Mask", use_container_width=True)
+            img_col1, img_col2 = st.columns(2)
+            with img_col1:
+                st.image(cv2.cvtColor(display_bgr, cv2.COLOR_BGR2RGB),
+                         caption="Original (ROI)", use_container_width=True)
+            with img_col2:
+                st.image(cv2.cvtColor(output_bgr, cv2.COLOR_BGR2RGB),
+                         caption="Processed Mask", use_container_width=True)
 
 
 # ═══════════════════════════
