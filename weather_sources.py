@@ -240,6 +240,8 @@ class InmetProvider:
         self.data_dir = Path(data_dir)
         self.local_tz = timezone(timedelta(hours=timezone_offset_hours))
         self.timezone_offset_hours = timezone_offset_hours
+        self._meta_cache: Dict[str, Dict[str, object]] = {}
+        self._parse_cache: Dict[str, Tuple[Dict[str, object], pd.DataFrame]] = {}
 
     def list_inmet_files(self) -> List[Path]:
         # Backward-compatible helper: local CSV files only.
@@ -290,6 +292,24 @@ class InmetProvider:
                 continue
         return content.decode("latin-1", errors="replace")
 
+    @staticmethod
+    def _decode_bytes(content: bytes) -> str:
+        for enc in ("utf-8-sig", "cp1252", "latin-1"):
+            try:
+                return content.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return content.decode("latin-1", errors="replace")
+
+    def _read_source_head(self, source: Tuple[Path, Optional[str]], max_bytes: int = 131072) -> str:
+        file_path, member = source
+        if member is None:
+            return self._decode_bytes(file_path.read_bytes()[:max_bytes])
+        with zipfile.ZipFile(file_path, "r") as zf:
+            with zf.open(member, "r") as fp:
+                content = fp.read(max_bytes)
+        return self._decode_bytes(content)
+
     def _read_source_text(self, source: Tuple[Path, Optional[str]]) -> str:
         file_path, member = source
         if member is None:
@@ -297,13 +317,7 @@ class InmetProvider:
 
         with zipfile.ZipFile(file_path, "r") as zf:
             content = zf.read(member)
-
-        for enc in ("utf-8-sig", "cp1252", "latin-1"):
-            try:
-                return content.decode(enc)
-            except UnicodeDecodeError:
-                continue
-        return content.decode("latin-1", errors="replace")
+        return self._decode_bytes(content)
 
     @staticmethod
     def _source_id(source: Tuple[Path, Optional[str]]) -> str:
@@ -319,9 +333,58 @@ class InmetProvider:
         root, member = source_id.split("!", 1)
         return Path(root), member
 
-    def parse_source(self, source: Tuple[Path, Optional[str]]) -> Tuple[Dict[str, object], pd.DataFrame]:
-        text = self._read_source_text(source)
+    @staticmethod
+    def _extract_date_range_from_name(source_id: str) -> Tuple[Optional[date], Optional[date]]:
+        name = source_id.split("!", 1)[-1] if "!" in source_id else Path(source_id).name
+        match = re.search(r"(\d{2}-\d{2}-\d{4})_A_(\d{2}-\d{2}-\d{4})", name)
+        if not match:
+            return None, None
+        try:
+            start_d = datetime.strptime(match.group(1), "%d-%m-%Y").date()
+            end_d = datetime.strptime(match.group(2), "%d-%m-%Y").date()
+            return start_d, end_d
+        except ValueError:
+            return None, None
+
+    def parse_source_metadata(self, source: Tuple[Path, Optional[str]]) -> Dict[str, object]:
         source_id = self._source_id(source)
+        if source_id in self._meta_cache:
+            return self._meta_cache[source_id]
+
+        text = self._read_source_head(source)
+        lines = [line.rstrip("\n\r") for line in text.splitlines() if line.strip()]
+
+        meta_raw: Dict[str, object] = {"file": source_id}
+        for line in lines:
+            if line.upper().startswith("DATA;"):
+                break
+            if ";" in line and ":" in line:
+                k, v = line.split(";", 1)
+                key = normalize_text(k.replace(":", ""))
+                meta_raw[key] = v.strip()
+
+        range_start, range_end = self._extract_date_range_from_name(source_id)
+        meta = {
+            "file": source_id,
+            "station_name": str(meta_raw.get("ESTACAO", "")).strip(),
+            "station_code": str(meta_raw.get("CODIGO WMO", "")).strip() or str(meta_raw.get("CODIGO", "")).strip(),
+            "region": str(meta_raw.get("REGIAO", "")).strip(),
+            "uf": str(meta_raw.get("UF", "")).strip(),
+            "latitude": parse_float(meta_raw.get("LATITUDE")),
+            "longitude": parse_float(meta_raw.get("LONGITUDE")),
+            "altitude": parse_float(meta_raw.get("ALTITUDE")),
+            "file_start_date": range_start,
+            "file_end_date": range_end,
+        }
+        self._meta_cache[source_id] = meta
+        return meta
+
+    def parse_source(self, source: Tuple[Path, Optional[str]]) -> Tuple[Dict[str, object], pd.DataFrame]:
+        source_id = self._source_id(source)
+        if source_id in self._parse_cache:
+            return self._parse_cache[source_id]
+
+        text = self._read_source_text(source)
         lines = [line.rstrip("\n\r") for line in text.splitlines() if line.strip()]
 
         meta: Dict[str, object] = {"file": source_id}
@@ -412,7 +475,9 @@ class InmetProvider:
             "altitude": alt,
             "columns": mappings,
         }
-        return meta_out, df
+        result = (meta_out, df)
+        self._parse_cache[source_id] = result
+        return result
 
     def parse_file(self, file_path: Path) -> Tuple[Dict[str, object], pd.DataFrame]:
         return self.parse_source((file_path, None))
@@ -421,7 +486,7 @@ class InmetProvider:
         groups: Dict[str, Dict[str, object]] = {}
         for source in self.list_inmet_sources():
             try:
-                meta, _ = self.parse_source(source)
+                meta = self.parse_source_metadata(source)
             except Exception:
                 continue
             station_key = meta.get("station_code") or f"{meta.get('station_name','UNKNOWN')}|{meta.get('latitude')}|{meta.get('longitude')}"
@@ -437,16 +502,28 @@ class InmetProvider:
                     "uf": meta.get("uf"),
                     "files": [],
                     "_sources": [],
+                    "_ranges": [],
                 },
             )
-            group["files"].append(meta.get("file"))
+            source_id = meta.get("file")
+            if source_id in group["files"]:
+                continue
+            group["files"].append(source_id)
             group["_sources"].append(source)
+            group["_ranges"].append((meta.get("file_start_date"), meta.get("file_end_date")))
         return groups
 
-    def load_station_data(self, station_group: Dict[str, object]) -> pd.DataFrame:
+    def load_station_data(self, station_group: Dict[str, object], start_date: Optional[date] = None, end_date: Optional[date] = None) -> pd.DataFrame:
         frames = []
         sources = station_group.get("_sources") or [self._parse_source_id(s) for s in station_group.get("files", [])]
         for source in sources:
+            if start_date is not None and end_date is not None:
+                s_id = self._source_id(source)
+                file_start, file_end = self._extract_date_range_from_name(s_id)
+                if file_start is not None and file_end is not None:
+                    overlaps = not (file_end < start_date or file_start > end_date)
+                    if not overlaps:
+                        continue
             _, df = self.parse_source(source)
             if not df.empty:
                 frames.append(df)
@@ -479,7 +556,7 @@ class InmetProvider:
             if distance > radius_km:
                 continue
 
-            df = self.load_station_data(station)
+            df = self.load_station_data(station, start_date=start_date, end_date=end_date)
             if df.empty:
                 continue
 

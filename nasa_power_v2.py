@@ -263,6 +263,15 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
             st.caption("INMET candidate ranking (best-first):")
             st.dataframe(pd.DataFrame(candidates), use_container_width=True)
 
+        if not daily_storage and not hourly_records:
+            status.update(label="No data found for the selected inputs.", state="error", expanded=True)
+            st.error(
+                "No weather records were returned. Try increasing INMET radius, adjusting date range, "
+                "or switching Source Selection to NASA only to test connectivity."
+            )
+            st.caption(f"Selection details: {output_metadata.get('selection_reason', 'N/A')}")
+            st.stop()
+
         # PHASE 3: WRITE OUT DATA
         ARM_COLS = ["No.", "Date", "Time", "Moisture Total", "Unit_1", "Precip", "Unit_2", "Irrigation", "Unit_3", "Type", "Type Description", "Interval", "Unit_4", "Leaf Wetness Duration", "Unit_5", "Min Temp", "Max Temp", "Avg Temp", "Temp Unit", "Min % Relative Humidity", "Max % Relative Humidity", "Avg % Relative Humidity", "Min Wind", "Max Wind", "Avg Wind", "Unit_6", "% Cloud Cover", "Avg Shortwave Radiation", "Unit_7", "Avg Soil Temp", "Unit_8", "0-10 cm Scaled Soil Moisture", "0-200 cm Scaled Soil Moisture", "Source", "Additional Comments"]
         ARM_DISPLAY = [c.split("_")[0] for c in ARM_COLS]
