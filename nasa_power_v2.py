@@ -3,6 +3,7 @@ import csv
 import io
 import json
 import math
+import re
 import statistics
 import urllib3
 from datetime import date, timedelta, datetime
@@ -60,6 +61,42 @@ def valid_lat_lon(lat_str, lon_str):
         return lat, lon
     except ValueError:
         return None, None
+
+def dms_to_decimal(dms_str, is_lat=True):
+    txt = str(dms_str or "").strip().upper()
+    if not txt:
+        return None
+
+    hemi_match = re.search(r"[NSEW]", txt)
+    hemi = hemi_match.group(0) if hemi_match else None
+    nums = re.findall(r"[-+]?\d+(?:\.\d+)?", txt)
+    if len(nums) == 0:
+        return None
+
+    try:
+        deg = float(nums[0])
+        minutes = float(nums[1]) if len(nums) > 1 else 0.0
+        seconds = float(nums[2]) if len(nums) > 2 else 0.0
+    except ValueError:
+        return None
+
+    if minutes < 0 or minutes >= 60 or seconds < 0 or seconds >= 60:
+        return None
+
+    value = abs(deg) + (minutes / 60.0) + (seconds / 3600.0)
+    sign = -1 if deg < 0 else 1
+
+    if hemi in ("S", "W"):
+        sign = -1
+    elif hemi in ("N", "E"):
+        sign = 1
+
+    value *= sign
+    if is_lat and not (-90.0 <= value <= 90.0):
+        return None
+    if (not is_lat) and not (-180.0 <= value <= 180.0):
+        return None
+    return value
 
 def get_precip_sum(start_d, end_d, data_dict):
     total = 0.0
@@ -130,9 +167,17 @@ st.markdown("Download and process weather data for ARM software using NASA POWER
 
 # 1. Location
 st.subheader("1. Location")
+coord_mode = st.selectbox("Coordinate Input Format", ["Decimal Degrees", "GMS (Degrees Minutes Seconds)"], index=0)
 col1, col2 = st.columns(2)
-with col1: lat_input = st.text_input("Latitude", value="")
-with col2: lon_input = st.text_input("Longitude", value="")
+if coord_mode == "Decimal Degrees":
+    with col1: lat_input = st.text_input("Latitude", value="", placeholder="-26.9386111")
+    with col2: lon_input = st.text_input("Longitude", value="", placeholder="-52.39805555")
+    lat_dms_input, lon_dms_input = "", ""
+else:
+    with col1: lat_dms_input = st.text_input("Latitude (GMS)", value="", placeholder="26 56 19 S")
+    with col2: lon_dms_input = st.text_input("Longitude (GMS)", value="", placeholder="52 23 53 W")
+    lat_input, lon_input = "", ""
+    st.caption("Accepted examples: 26 56 19 S, 26°56'19\"S, -26 56 19")
 
 # 2. Date Range
 st.subheader("2. Date Range")
@@ -197,9 +242,13 @@ with st.expander("⚙️ Advanced Settings"):
 
 # --- Processing Engine ---
 if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True):
-    lat, lon = valid_lat_lon(lat_input, lon_input)
+    if coord_mode == "Decimal Degrees":
+        lat, lon = valid_lat_lon(lat_input, lon_input)
+    else:
+        lat = dms_to_decimal(lat_dms_input, is_lat=True)
+        lon = dms_to_decimal(lon_dms_input, is_lat=False)
     if lat is None:
-        st.error("❌ Invalid coordinates. Please check your Latitude and Longitude.")
+        st.error("❌ Invalid coordinates. Please check your Latitude and Longitude format.")
         st.stop()
     if start_date > end_date:
         st.error("❌ Start date must be before or equal to End date.")
