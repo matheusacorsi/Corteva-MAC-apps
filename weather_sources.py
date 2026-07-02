@@ -671,6 +671,9 @@ def _build_outputs_from_hourly_frame(
         for p in hourly_req:
             val = row.get(p)
             rec[p] = None if pd.isna(val) else float(val)
+        if "PRECTOTCORR" in frame.columns:
+            pval = row.get("PRECTOTCORR")
+            rec["PRECTOTCORR"] = None if pd.isna(pval) else float(pval)
         hourly_records.append(rec)
 
         if needs_daily or needs_app:

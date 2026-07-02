@@ -32,8 +32,8 @@ HEADER_MAP = {
     "PRECTOTCORR": "PREC_MM"
 }
 
-COMMUNITIES = ["AG", "RE", "SB"]
-TIME_STANDARDS = ["LST", "UTC"]
+DEFAULT_COMMUNITY = "AG"
+DEFAULT_TIME_STANDARD = "LST"
 SOURCE_STRATEGIES = ["Auto", "NASA only", "Prefer INMET"]
 
 # --- Utilities ---
@@ -188,26 +188,24 @@ with col4: end_date = st.date_input("End Date", value=today - timedelta(days=1))
 
 # 3. Parameters
 st.subheader("3. Parameters")
-selected_params = {}
-cols = st.columns(3)
-for idx, (label, (code, is_hourly)) in enumerate(PARAMETERS.items()):
-    with cols[idx % 3]:
-        selected_params[code] = st.checkbox(f"{label} [{'Hr' if is_hourly else 'Day'}]", value=True)
+st.caption("All available weather parameters are always included in downloads.")
+selected_params = {code: True for code, _ in PARAMETERS.values()}
 
 # 4. Options
 st.subheader("4. Output Options")
 col5, col6, col7 = st.columns(3)
 with col5:
-    community = st.selectbox("Community", COMMUNITIES, index=0)
+    st.text_input("Community", value=DEFAULT_COMMUNITY, disabled=True)
     out_daily = st.checkbox("Generate Daily Stats", value=True)
 with col6:
-    tstd = st.selectbox("Time Standard", TIME_STANDARDS, index=0)
+    st.text_input("Time Standard", value=DEFAULT_TIME_STANDARD, disabled=True)
     out_hourly = st.checkbox("Generate Hourly Data", value=False)
 with col7:
     output_format = st.selectbox("Output Layout", ["Standard Layout (CSV)", "ARM Software Layout (Excel)"], index=1)
     apply_precip_filter = st.checkbox("Filter Low Rainfall (Daily)", value=True)
     precip_threshold = st.number_input("Rainfall Threshold (mm)", value=0.5, step=0.1, disabled=not apply_precip_filter)
 st.caption("Rainfall filter applies to NASA POWER daily precipitation values. INMET-primary daily precipitation is not filtered.")
+st.caption("Hourly precipitation is included in hourly CSV downloads when INMET is the source. NASA POWER provides precipitation at daily resolution only.")
 
 st.subheader("5. Data Source")
 col8, col9, col10 = st.columns(3)
@@ -266,6 +264,8 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
     st.session_state.output_metadata_json = None
     
     st.session_state.is_arm = (output_format == "ARM Software Layout (Excel)")
+    community = DEFAULT_COMMUNITY
+    tstd = DEFAULT_TIME_STANDARD
     st.session_state.base_filename = f"POWER_{community}_{lat:.4f}_{lon:.4f}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
 
     hourly_req = [code for code, sel in selected_params.items() if sel and PARAMETERS[[k for k, v in PARAMETERS.items() if v[0]==code][0]][1]]
@@ -310,6 +310,8 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
                 f"{station_meta.get('station_name', 'Unknown')} "
                 f"({station_meta.get('distance_km', 'N/A')} km)."
             )
+            if out_hourly and not st.session_state.is_arm:
+                st.caption("INMET hourly output includes precipitation (PREC_MM_HR). NASA POWER hourly output does not include precipitation.")
         else:
             st.info(f"Using NASA POWER. Reason: {output_metadata.get('selection_reason', 'N/A')}")
 
@@ -402,6 +404,9 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
             out_h = ["DATE", "HR"]
             for p in hourly_req:
                 out_h.append(HEADER_MAP.get(p, p))
+            include_hourly_precip = output_metadata.get("primary_source") == "INMET"
+            if include_hourly_precip:
+                out_h.append("PREC_MM_HR")
             if "WD2M" in hourly_req:
                 out_h.append(HEADER_MAP.get("WD2M_COMPASS", "WD_CARDINAL"))
             writer_h.writerow(out_h)
@@ -411,6 +416,9 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
                 for p in hourly_req:
                     v = rec.get(p)
                     row_vals.append(v if v is not None else "")
+                if include_hourly_precip:
+                    pval = rec.get("PRECTOTCORR")
+                    row_vals.append(pval if pval is not None else "")
                 if "WD2M" in hourly_req:
                     wd_val = rec.get("WD2M")
                     row_vals.append(deg_to_compass_16(wd_val) if wd_val is not None else "")
