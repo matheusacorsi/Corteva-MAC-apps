@@ -186,28 +186,22 @@ col3, col4 = st.columns(2)
 with col3: start_date = st.date_input("Start Date", value=date(today.year, 1, 1))
 with col4: end_date = st.date_input("End Date", value=today - timedelta(days=1))
 
-# 3. Parameters
-st.subheader("3. Parameters")
-st.caption("All available weather parameters are always included in downloads.")
 selected_params = {code: True for code, _ in PARAMETERS.values()}
 
-# 4. Options
-st.subheader("4. Output Options")
-col5, col6, col7 = st.columns(3)
+# 3. Output Options
+st.subheader("3. Output Options")
+col5, col6 = st.columns(2)
 with col5:
-    st.text_input("Community", value=DEFAULT_COMMUNITY, disabled=True)
     out_daily = st.checkbox("Generate Daily Stats", value=True)
-with col6:
-    st.text_input("Time Standard", value=DEFAULT_TIME_STANDARD, disabled=True)
     out_hourly = st.checkbox("Generate Hourly Data", value=False)
-with col7:
+with col6:
     output_format = st.selectbox("Output Layout", ["Standard Layout (CSV)", "ARM Software Layout (Excel)"], index=1)
     apply_precip_filter = st.checkbox("Filter Low Rainfall (Daily)", value=True)
     precip_threshold = st.number_input("Rainfall Threshold (mm)", value=0.5, step=0.1, disabled=not apply_precip_filter)
 st.caption("Rainfall filter applies to NASA POWER daily precipitation values. INMET-primary daily precipitation is not filtered.")
 st.caption("Hourly precipitation is included in hourly CSV downloads when INMET is the source. NASA POWER provides precipitation at daily resolution only.")
 
-st.subheader("5. Data Source")
+st.subheader("4. Data Source")
 col8, col9, col10 = st.columns(3)
 with col8:
     source_strategy = st.selectbox("Source Selection", SOURCE_STRATEGIES, index=0)
