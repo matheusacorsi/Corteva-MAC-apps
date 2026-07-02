@@ -402,8 +402,12 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
                             if first_moisture_dt is not None:
                                 first_moisture_date = first_moisture_dt.date()
                                 delta_hrs = max(0, int(round((first_moisture_dt - app_dt).total_seconds() / 3600.0)))
-                                time_to_first = str(delta_hrs)
-                                time_unit = "HR"
+                                if delta_hrs <= 24:
+                                    time_to_first = str(delta_hrs)
+                                    time_unit = "HR"
+                                else:
+                                    time_to_first = str(max(1, int(delta_hrs // 24)))
+                                    time_unit = "DAY"
                             else:
                                 cur_d = app_date
                                 while cur_d <= end_date:
