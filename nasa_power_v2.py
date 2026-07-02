@@ -6,7 +6,7 @@ import math
 import re
 import statistics
 import urllib3
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta, datetime, time
 import pandas as pd
 from weather_sources import build_weather_dataset
 
@@ -173,6 +173,7 @@ if coord_mode == "Decimal Degrees":
     with col1: lat_input = st.text_input("Latitude", value="", placeholder="-26.9386111")
     with col2: lon_input = st.text_input("Longitude", value="", placeholder="-52.39805555")
     lat_dms_input, lon_dms_input = "", ""
+    st.caption("Decimal format note: use '.' as decimal separator (example: -26.9386111).")
 else:
     with col1: lat_dms_input = st.text_input("Latitude (GMS)", value="", placeholder="26 56 19 S")
     with col2: lon_dms_input = st.text_input("Longitude (GMS)", value="", placeholder="52 23 53 W")
@@ -225,7 +226,8 @@ with st.expander("🌱 Weather Application Export (ARM Format)"):
         for i in range(num_apps):
             app_letter = chr(65 + i)
             d = st.date_input(f"Application {app_letter} Date", value=date.today() - timedelta(days=7), key=f"app_{app_letter}")
-            app_dates_input.append((app_letter, d))
+            t = st.time_input(f"Application {app_letter} Time", value=time(9, 0), step=1800, key=f"app_t_{app_letter}")
+            app_dates_input.append((app_letter, d, t))
         st.caption("⚠️ Ensure your Date Range covers at least 14 days prior and 28 days after your application dates.")
 
 with st.expander("⚙️ Advanced Settings"):
@@ -326,7 +328,7 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
             st.stop()
 
         # PHASE 3: WRITE OUT DATA
-        ARM_COLS = ["No.", "Date", "Time", "Moisture Total", "Unit_1", "Precip", "Unit_2", "Irrigation", "Unit_3", "Type", "Type Description", "Interval", "Unit_4", "Leaf Wetness Duration", "Unit_5", "Min Temp", "Max Temp", "Avg Temp", "Temp Unit", "Min % Relative Humidity", "Max % Relative Humidity", "Avg % Relative Humidity", "Min Wind", "Max Wind", "Avg Wind", "Unit_6", "% Cloud Cover", "Avg Shortwave Radiation", "Unit_7", "Avg Soil Temp", "Unit_8", "0-10 cm Scaled Soil Moisture", "0-200 cm Scaled Soil Moisture", "Source", "Additional Comments"]
+        ARM_COLS = ["Date", "Time", "Moisture Total", "Unit_1", "Precip", "Unit_2", "Irrigation", "Unit_3", "Type", "Type Description", "Interval", "Unit_4", "Leaf Wetness Duration", "Unit_5", "Min Temp", "Max Temp", "Avg Temp", "Temp Unit", "Min % Relative Humidity", "Max % Relative Humidity", "Avg % Relative Humidity", "Min Wind", "Max Wind", "Avg Wind", "Unit_6", "% Cloud Cover", "Avg Shortwave Radiation", "Unit_7", "Avg Soil Temp", "Unit_8", "0-10 cm Scaled Soil Moisture", "0-200 cm Scaled Soil Moisture", "Source", "Additional Comments"]
         ARM_DISPLAY = [c.split("_")[0] for c in ARM_COLS]
 
         if out_daily and daily_storage:
@@ -353,16 +355,114 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
                     ws_max = f"{max(ws_vals):.2f}" if ws_vals else ""
                     ws_avg = f"{statistics.mean(ws_vals):.2f}" if ws_vals else ""
 
+                    # Convert wind speed from m/s to km/h for ARM output.
+                    ws_min_kps = f"{float(ws_min) * 3.6:.2f}" if ws_min else ""
+                    ws_max_kps = f"{float(ws_max) * 3.6:.2f}" if ws_max else ""
+                    ws_avg_kps = f"{float(ws_avg) * 3.6:.2f}" if ws_avg else ""
+
                     arm_data.append([
-                        idx + 1, to_arm_date(dt), "", prec_v, "mm" if prec_v else "", prec_v, "mm" if prec_v else "",
+                        to_arm_date(dt), "", prec_v, "mm" if prec_v else "", prec_v, "mm" if prec_v else "",
                         "", "", "RAIN" if prec and prec > 0 else "", "rain" if prec and prec > 0 else "", "", "", "", "",
-                        t_min, t_max, t_avg, "C" if t_avg else "", rh_min, rh_max, rh_avg, ws_min, ws_max, ws_avg, "MPS" if ws_avg else "",
+                        t_min, t_max, t_avg, "C" if t_avg else "", rh_min, rh_max, rh_avg, ws_min_kps, ws_max_kps, ws_avg_kps, "KPS" if ws_avg_kps else "",
                         "", "", "", "", "", "", "", "ENTERED", ""
                     ])
                 
                 df = pd.DataFrame(arm_data, columns=ARM_DISPLAY)
                 excel_daily_arm_buffer = io.BytesIO()
-                with pd.ExcelWriter(excel_daily_arm_buffer, engine='openpyxl') as writer: df.to_excel(writer, index=False)
+                with pd.ExcelWriter(excel_daily_arm_buffer, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False, sheet_name="Meteorological_Data")
+
+                    if enable_app_format:
+                        # Build application worksheet in the same ARM workbook.
+                        hourly_prec_by_dt = {}
+                        for rec in hourly_records:
+                            pval = rec.get("PRECTOTCORR")
+                            if pval is None:
+                                continue
+                            try:
+                                dt_local = datetime.strptime(f"{rec.get('date_key')} {int(float(rec.get('hr', 0))):02d}", "%Y%m%d %H")
+                            except Exception:
+                                continue
+                            hourly_prec_by_dt[dt_local] = float(pval)
+
+                        app_rows = []
+                        for app_letter, app_date, app_time in app_dates_input:
+                            app_dt = datetime.combine(app_date, app_time)
+
+                            first_moisture_dt = None
+                            for dtk in sorted(hourly_prec_by_dt.keys()):
+                                if dtk >= app_dt and hourly_prec_by_dt[dtk] > 0:
+                                    first_moisture_dt = dtk
+                                    break
+
+                            first_moisture_date = None
+                            time_to_first = ""
+                            time_unit = ""
+
+                            if first_moisture_dt is not None:
+                                first_moisture_date = first_moisture_dt.date()
+                                delta_hrs = max(0, int(round((first_moisture_dt - app_dt).total_seconds() / 3600.0)))
+                                time_to_first = str(delta_hrs)
+                                time_unit = "HR"
+                            else:
+                                cur_d = app_date
+                                while cur_d <= end_date:
+                                    dkey = cur_d.strftime("%Y%m%d")
+                                    dprec = daily_storage.get(dkey, {}).get("PRECTOTCORR")
+                                    if dprec is not None and dprec > 0:
+                                        first_moisture_date = cur_d
+                                        time_to_first = str((cur_d - app_date).days)
+                                        time_unit = "DAY"
+                                        break
+                                    cur_d += timedelta(days=1)
+
+                            first_moisture_arm = first_moisture_date.strftime("%d%b%y").lstrip("0") if first_moisture_date else ""
+                            first_moisture_amt = ""
+                            if first_moisture_date is not None:
+                                dkey_fm = first_moisture_date.strftime("%Y%m%d")
+                                dprec = daily_storage.get(dkey_fm, {}).get("PRECTOTCORR")
+                                if dprec is not None:
+                                    first_moisture_amt = f"{float(dprec):.1f}"
+
+                            w2_before = get_precip_sum(app_date - timedelta(days=14), app_date - timedelta(days=8), daily_storage)
+                            w1_before = get_precip_sum(app_date - timedelta(days=7), app_date - timedelta(days=1), daily_storage)
+                            day_0 = get_precip_sum(app_date, app_date, daily_storage)
+                            h6_after = round(day_0 * 0.25, 2)
+                            h24_after = day_0
+                            w1_after = get_precip_sum(app_date + timedelta(days=1), app_date + timedelta(days=7), daily_storage)
+                            w2_after = get_precip_sum(app_date + timedelta(days=8), app_date + timedelta(days=14), daily_storage)
+                            w3_after = get_precip_sum(app_date + timedelta(days=15), app_date + timedelta(days=21), daily_storage)
+                            w4_after = get_precip_sum(app_date + timedelta(days=22), app_date + timedelta(days=28), daily_storage)
+
+                            app_rows.extend([
+                                [f"--- Application {app_letter} ---", ""],
+                                ["First Moisture Occured On", first_moisture_arm],
+                                ["Time to First Moisture", time_to_first],
+                                ["", time_unit],
+                                ["Amount of First Moisture", first_moisture_amt],
+                                ["", "mm"],
+                                ["Moisture 2 Weeks Before Appl.", w2_before],
+                                ["", "mm"],
+                                ["Moisture 1 Week Before Appl.", w1_before],
+                                ["", "mm"],
+                                ["Moisture 6 Hours After Appl.", h6_after],
+                                ["", "mm"],
+                                ["Moisture 24 Hours After Appl.", h24_after],
+                                ["", "mm"],
+                                ["Moisture 1 Week After Appl.", w1_after],
+                                ["", "mm"],
+                                ["Moisture 2 Weeks After Appl.", w2_after],
+                                ["", "mm"],
+                                ["Moisture 3 Weeks After Appl.", w3_after],
+                                ["", "mm"],
+                                ["Moisture 4 Weeks After Appl.", w4_after],
+                                ["", "mm"],
+                                ["", ""],
+                            ])
+
+                        df_apps = pd.DataFrame(app_rows, columns=["Field", "Value"])
+                        df_apps.to_excel(writer, index=False, header=False, sheet_name="Weather_Application")
+
                 st.session_state.excel_daily_arm = excel_daily_arm_buffer.getvalue()
             
             else:
@@ -425,22 +525,22 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
             for idx, r in enumerate(hourly_records):
                 t_val = f"{r['T2M']:.2f}" if r.get('T2M') is not None else ""
                 rh_val = f"{r['RH2M']:.2f}" if r.get('RH2M') is not None else ""
-                ws_val = f"{r['WS2M']:.2f}" if r.get('WS2M') is not None else ""
+                ws_val = f"{r['WS2M'] * 3.6:.2f}" if r.get('WS2M') is not None else ""
                 time_str = f"{str(r['hr']).split('.')[0].zfill(2)}:00"
                 arm_hr_data.append([
-                    idx + 1, to_arm_date(r['date_key']), time_str, "", "", "", "", "", "", "", "", "", "", "", "",
-                    "", "", t_val, "C" if t_val else "", "", "", rh_val, "", "", ws_val, "MPS" if ws_val else "",
-                    "", "", "", "", "", "", "", "ENTERED", ""
+                    to_arm_date(r['date_key']), time_str, "", "", "", "", "", "", "", "", "", "", "", "",
+                    "", t_val, "C" if t_val else "", "", "", rh_val, "", "", ws_val, "KPS" if ws_val else "",
+                    "", "", "", "", "", "", "", "", "ENTERED", ""
                 ])
             df_hr = pd.DataFrame(arm_hr_data, columns=ARM_DISPLAY)
             excel_hourly_arm_buffer = io.BytesIO()
             with pd.ExcelWriter(excel_hourly_arm_buffer, engine='openpyxl') as writer: df_hr.to_excel(writer, index=False)
             st.session_state.excel_hourly_arm = excel_hourly_arm_buffer.getvalue()
 
-        if enable_app_format and daily_storage:
+        if enable_app_format and daily_storage and not st.session_state.is_arm:
             st.write("🌱 Generating Application Layout...")
             app_table_data = []
-            for app_letter, app_date in app_dates_input:
+            for app_letter, app_date, _app_time in app_dates_input:
                 w2_before = get_precip_sum(app_date - timedelta(days=14), app_date - timedelta(days=8), daily_storage)
                 w1_before = get_precip_sum(app_date - timedelta(days=7), app_date - timedelta(days=1), daily_storage)
                 day_0 = get_precip_sum(app_date, app_date, daily_storage)
