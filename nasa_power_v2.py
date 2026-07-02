@@ -251,6 +251,19 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
         st.error("❌ Please select at least one output format (Hourly or Daily).")
         st.stop()
 
+    user_start_date = start_date
+    user_end_date = end_date
+
+    # When application format is enabled, expand fetch range so pre/post windows are complete,
+    # including cross-year lookbacks (e.g., Jan application needing previous-year data).
+    fetch_start_date = user_start_date
+    fetch_end_date = user_end_date
+    if enable_app_format and app_dates_input:
+        min_app_date = min(d for _, d, _ in app_dates_input)
+        max_app_date = max(d for _, d, _ in app_dates_input)
+        fetch_start_date = min(user_start_date, min_app_date - timedelta(days=14))
+        fetch_end_date = max(user_end_date, max_app_date + timedelta(days=28))
+
     # Clear previous session state data
     st.session_state.csv_hourly_str = None
     st.session_state.csv_daily_str = None
@@ -262,7 +275,7 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
     st.session_state.is_arm = (output_format == "ARM Software Layout (Excel)")
     community = DEFAULT_COMMUNITY
     tstd = DEFAULT_TIME_STANDARD
-    st.session_state.base_filename = f"POWER_{community}_{lat:.4f}_{lon:.4f}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
+    st.session_state.base_filename = f"POWER_{community}_{lat:.4f}_{lon:.4f}_{user_start_date.strftime('%Y%m%d')}_{user_end_date.strftime('%Y%m%d')}"
 
     hourly_req = [code for code, sel in selected_params.items() if sel and PARAMETERS[[k for k, v in PARAMETERS.items() if v[0]==code][0]][1]]
     daily_req = [code for code, sel in selected_params.items() if sel and not PARAMETERS[[k for k, v in PARAMETERS.items() if v[0]==code][0]][1]]
@@ -275,8 +288,8 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
         weather_result = build_weather_dataset(
             lat=lat,
             lon=lon,
-            start_date=start_date,
-            end_date=end_date,
+            start_date=fetch_start_date,
+            end_date=fetch_end_date,
             selected_params=selected_params,
             community=community,
             tstd=tstd if force_nasa_timezone else "UTC",
@@ -297,6 +310,23 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
         daily_storage = weather_result.daily_storage
         hourly_records = weather_result.hourly_records
         output_metadata = weather_result.metadata
+
+        # Keep main outputs constrained to user-selected range while allowing expanded-range
+        # data to support application summary windows.
+        main_daily_storage = {
+            k: v
+            for k, v in daily_storage.items()
+            if user_start_date.strftime("%Y%m%d") <= str(k) <= user_end_date.strftime("%Y%m%d")
+        }
+        main_hourly_records = [
+            rec
+            for rec in hourly_records
+            if user_start_date.strftime("%Y%m%d") <= str(rec.get("date_key", "")) <= user_end_date.strftime("%Y%m%d")
+        ]
+
+        # Use filtered data for standard outputs.
+        daily_storage = main_daily_storage
+        hourly_records = main_hourly_records
         st.session_state.output_metadata_json = json.dumps(output_metadata, indent=2, ensure_ascii=False)
 
         if output_metadata.get("primary_source") == "INMET":
@@ -410,9 +440,9 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
                                     time_unit = "DAY"
                             else:
                                 cur_d = app_date
-                                while cur_d <= end_date:
+                                while cur_d <= fetch_end_date:
                                     dkey = cur_d.strftime("%Y%m%d")
-                                    dprec = daily_storage.get(dkey, {}).get("PRECTOTCORR")
+                                    dprec = weather_result.daily_storage.get(dkey, {}).get("PRECTOTCORR")
                                     if dprec is not None and dprec > 0:
                                         first_moisture_date = cur_d
                                         time_to_first = str((cur_d - app_date).days)
@@ -424,19 +454,19 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
                             first_moisture_amt = ""
                             if first_moisture_date is not None:
                                 dkey_fm = first_moisture_date.strftime("%Y%m%d")
-                                dprec = daily_storage.get(dkey_fm, {}).get("PRECTOTCORR")
+                                dprec = weather_result.daily_storage.get(dkey_fm, {}).get("PRECTOTCORR")
                                 if dprec is not None:
                                     first_moisture_amt = f"{float(dprec):.1f}"
 
-                            w2_before = get_precip_sum(app_date - timedelta(days=14), app_date - timedelta(days=8), daily_storage)
-                            w1_before = get_precip_sum(app_date - timedelta(days=7), app_date - timedelta(days=1), daily_storage)
-                            day_0 = get_precip_sum(app_date, app_date, daily_storage)
+                            w2_before = get_precip_sum(app_date - timedelta(days=14), app_date - timedelta(days=8), weather_result.daily_storage)
+                            w1_before = get_precip_sum(app_date - timedelta(days=7), app_date - timedelta(days=1), weather_result.daily_storage)
+                            day_0 = get_precip_sum(app_date, app_date, weather_result.daily_storage)
                             h6_after = round(day_0 * 0.25, 2)
                             h24_after = day_0
-                            w1_after = get_precip_sum(app_date + timedelta(days=1), app_date + timedelta(days=7), daily_storage)
-                            w2_after = get_precip_sum(app_date + timedelta(days=8), app_date + timedelta(days=14), daily_storage)
-                            w3_after = get_precip_sum(app_date + timedelta(days=15), app_date + timedelta(days=21), daily_storage)
-                            w4_after = get_precip_sum(app_date + timedelta(days=22), app_date + timedelta(days=28), daily_storage)
+                            w1_after = get_precip_sum(app_date + timedelta(days=1), app_date + timedelta(days=7), weather_result.daily_storage)
+                            w2_after = get_precip_sum(app_date + timedelta(days=8), app_date + timedelta(days=14), weather_result.daily_storage)
+                            w3_after = get_precip_sum(app_date + timedelta(days=15), app_date + timedelta(days=21), weather_result.daily_storage)
+                            w4_after = get_precip_sum(app_date + timedelta(days=22), app_date + timedelta(days=28), weather_result.daily_storage)
 
                             app_rows.extend([
                                 [f"--- Application {app_letter} ---", ""],
@@ -545,15 +575,15 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
             st.write("🌱 Generating Application Layout...")
             app_table_data = []
             for app_letter, app_date, _app_time in app_dates_input:
-                w2_before = get_precip_sum(app_date - timedelta(days=14), app_date - timedelta(days=8), daily_storage)
-                w1_before = get_precip_sum(app_date - timedelta(days=7), app_date - timedelta(days=1), daily_storage)
-                day_0 = get_precip_sum(app_date, app_date, daily_storage)
+                w2_before = get_precip_sum(app_date - timedelta(days=14), app_date - timedelta(days=8), weather_result.daily_storage)
+                w1_before = get_precip_sum(app_date - timedelta(days=7), app_date - timedelta(days=1), weather_result.daily_storage)
+                day_0 = get_precip_sum(app_date, app_date, weather_result.daily_storage)
                 h6_after = round(day_0 * 0.25, 2)
                 h24_after = day_0
-                w1_after = get_precip_sum(app_date + timedelta(days=1), app_date + timedelta(days=7), daily_storage)
-                w2_after = get_precip_sum(app_date + timedelta(days=8), app_date + timedelta(days=14), daily_storage)
-                w3_after = get_precip_sum(app_date + timedelta(days=15), app_date + timedelta(days=21), daily_storage)
-                w4_after = get_precip_sum(app_date + timedelta(days=22), app_date + timedelta(days=28), daily_storage)
+                w1_after = get_precip_sum(app_date + timedelta(days=1), app_date + timedelta(days=7), weather_result.daily_storage)
+                w2_after = get_precip_sum(app_date + timedelta(days=8), app_date + timedelta(days=14), weather_result.daily_storage)
+                w3_after = get_precip_sum(app_date + timedelta(days=15), app_date + timedelta(days=21), weather_result.daily_storage)
+                w4_after = get_precip_sum(app_date + timedelta(days=22), app_date + timedelta(days=28), weather_result.daily_storage)
 
                 app_table_data.extend([
                     [f"--- Application {app_letter} ---", "", ""],
