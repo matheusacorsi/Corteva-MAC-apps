@@ -77,7 +77,7 @@ def to_arm_date(date_key):
     return d.strftime("%d%b%y").lstrip("0")
 
 # --- Streamlit UI Setup ---
-st.set_page_config(page_title="NASA POWER Downloader", layout="wide", page_icon="🌦️")
+st.set_page_config(page_title="Weather2ARM", layout="wide", page_icon="🌦️")
 
 # Custom CSS for Bottom-Right NASA Rights
 st.markdown(
@@ -105,8 +105,10 @@ st.markdown(
     }
     </style>
     <div class="nasa-footer">
-        <b>NASA POWER Project</b><br>
+        <b>NASA POWER + INMET Data References</b><br>
         These data were obtained from the NASA Langley Research Center (LaRC) POWER Project funded through the NASA Earth Science/Applied Science Program.
+        <br><br>
+        INMET station data are provided by Instituto Nacional de Meteorologia (INMET), Brazil.
     </div>
     """,
     unsafe_allow_html=True
@@ -123,8 +125,8 @@ if "base_filename" not in st.session_state: st.session_state.base_filename = ""
 if "is_arm" not in st.session_state: st.session_state.is_arm = False
 
 # Main Layout
-st.title("🌦️ NASA POWER Downloader")
-st.markdown("Download and process high-resolution weather data with direct ARM software integration.")
+st.title("🌦️ Weather2ARM")
+st.markdown("Download and process weather data for ARM software using NASA POWER and INMET sources.")
 
 # 1. Location
 st.subheader("1. Location")
@@ -157,9 +159,10 @@ with col6:
     tstd = st.selectbox("Time Standard", TIME_STANDARDS, index=0)
     out_hourly = st.checkbox("Generate Hourly Data", value=False)
 with col7:
-    output_format = st.selectbox("Output Layout", ["Standard Layout (CSV)", "ARM Software Layout (Excel)"])
+    output_format = st.selectbox("Output Layout", ["Standard Layout (CSV)", "ARM Software Layout (Excel)"], index=1)
     apply_precip_filter = st.checkbox("Filter Low Rainfall (Daily)", value=True)
     precip_threshold = st.number_input("Rainfall Threshold (mm)", value=0.5, step=0.1, disabled=not apply_precip_filter)
+st.caption("Rainfall filter applies to NASA POWER daily precipitation values. INMET-primary daily precipitation is not filtered.")
 
 st.subheader("5. Data Source")
 col8, col9, col10 = st.columns(3)
@@ -168,10 +171,12 @@ with col8:
     inmet_gap_fill = st.checkbox("Fill INMET gaps with NASA POWER", value=True)
 with col9:
     inmet_radius_km = st.number_input("INMET Search Radius (km)", min_value=1.0, value=50.0, step=5.0)
-    timezone_offset_hours = st.number_input("Local UTC Offset", min_value=-12, max_value=14, value=-3, step=1)
+    timezone_offset_hours = st.number_input("Local UTC Offset (Brasilia default: -3)", min_value=-12, max_value=14, value=-3, step=1)
 with col10:
-    inmet_data_dir = st.text_input("INMET Data Directory", value=".")
+    inmet_data_dir = st.text_input("INMET Data Directory", value="INMET", help="Path relative to the app root. Example: INMET (supports nested folders and ZIP files).")
+    preferred_inmet_station = st.text_input("Preferred INMET Station (optional)", value="", help="Optional station code or name filter, e.g. A858 or XANXERE.")
     force_nasa_timezone = st.checkbox("Keep NASA Time Standard Setting", value=True)
+st.info("INMET dataset availability: monthly station files generally cover dates up to the end of the previous month and currently go back to 2025.")
 
 # Hidden Menus
 with st.expander("🌱 Weather Application Export (ARM Format)"):
@@ -239,6 +244,7 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
             inmet_radius_km=float(inmet_radius_km),
             inmet_gap_fill=inmet_gap_fill,
             inmet_data_dir=inmet_data_dir,
+            preferred_inmet_station=preferred_inmet_station,
             timezone_offset_hours=int(timezone_offset_hours),
             ssl_verify=ssl_verify,
         )
@@ -262,6 +268,8 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
         if candidates:
             st.caption("INMET candidate ranking (best-first):")
             st.dataframe(pd.DataFrame(candidates), use_container_width=True)
+            st.caption("Coverage ratio = fraction of expected hourly timestamps with records in requested period. Missing ratio = fraction of required variable cells that are missing over expected hourly grid.")
+            st.caption("Missing days columns indicate dates with missing INMET values for required variables and/or daily precipitation.")
 
         if not daily_storage and not hourly_records:
             status.update(label="No data found for the selected inputs.", state="error", expanded=True)

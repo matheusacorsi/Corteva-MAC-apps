@@ -568,26 +568,44 @@ class InmetProvider:
             coverage_hours = int(scoped["dt_local"].nunique())
             coverage_ratio = coverage_hours / expected_hours if expected_hours else 0.0
 
+            start_dt = datetime.combine(start_date, datetime.min.time(), tzinfo=self.local_tz)
+            end_dt = datetime.combine(end_date, datetime.max.time().replace(hour=23, minute=0, second=0, microsecond=0), tzinfo=self.local_tz)
+            full_idx = pd.date_range(start=start_dt, end=end_dt, freq="H", tz=self.local_tz)
+            base = pd.DataFrame({"dt_local": full_idx, "date_key": full_idx.strftime("%Y%m%d")})
+            base = base.merge(
+                scoped[[c for c in ["dt_local", "PRECTOTCORR", "T2M", "RH2M", "WS2M", "WD2M"] if c in scoped.columns]],
+                how="left",
+                on="dt_local",
+            )
+
             available_vars = []
             missing_cells = 0
             total_cells = 0
             for p in required_hourly:
-                if p in scoped.columns:
-                    not_null_count = int(scoped[p].notna().sum())
+                if p in base.columns:
+                    not_null_count = int(base[p].notna().sum())
                     if not_null_count > 0:
                         available_vars.append(p)
-                    total_cells += len(scoped)
-                    missing_cells += int(scoped[p].isna().sum())
+                    total_cells += len(base)
+                    missing_cells += int(base[p].isna().sum())
+
+            day_missing_mask = pd.Series(False, index=base.index)
+            for p in required_hourly:
+                if p in base.columns:
+                    day_missing_mask = day_missing_mask | base[p].isna()
+            missing_days = sorted(base.loc[day_missing_mask, "date_key"].astype(str).unique().tolist())
 
             precip_missing_days = 0
             if needs_daily_precip:
-                if "PRECTOTCORR" in scoped.columns:
-                    daily = scoped.groupby(scoped["dt_local"].dt.strftime("%Y%m%d"))["PRECTOTCORR"].sum(min_count=1)
+                if "PRECTOTCORR" in base.columns:
+                    daily = base.groupby(base["dt_local"].dt.strftime("%Y%m%d"))["PRECTOTCORR"].sum(min_count=1)
                     full_index = pd.date_range(start=start_date, end=end_date, freq="D").strftime("%Y%m%d")
                     daily = daily.reindex(full_index)
                     precip_missing_days = int(daily.isna().sum())
+                    missing_days = sorted(set(missing_days).union(set(daily[daily.isna()].index.astype(str).tolist())))
                 else:
                     precip_missing_days = expected_days
+                    missing_days = sorted(set(missing_days).union(set(pd.date_range(start=start_date, end=end_date, freq="D").strftime("%Y%m%d").tolist())))
 
             missing_ratio = (missing_cells / total_cells) if total_cells else 1.0
             required_count = len(required_hourly) + (1 if needs_daily_precip else 0)
@@ -608,6 +626,8 @@ class InmetProvider:
                     "required_variable_count": required_count,
                     "missing_ratio": round(missing_ratio, 6),
                     "precip_missing_days": precip_missing_days,
+                    "missing_days": missing_days,
+                    "missing_day_count": len(missing_days),
                     "_data": scoped,
                     "_station": station,
                 }
@@ -762,6 +782,7 @@ def build_weather_dataset(
     inmet_radius_km: float,
     inmet_gap_fill: bool,
     inmet_data_dir: str,
+    preferred_inmet_station: str = "",
     timezone_offset_hours: int = -3,
     ssl_verify: bool = False,
 ) -> WeatherBuildResult:
@@ -798,6 +819,17 @@ def build_weather_dataset(
         needs_daily_precip=bool(daily_req),
     )
 
+    preferred_query = (preferred_inmet_station or "").strip().upper()
+    if preferred_query:
+        matched_candidates = [
+            c
+            for c in candidates
+            if preferred_query in str(c.get("station_code", "")).upper()
+            or preferred_query in str(c.get("station_name", "")).upper()
+        ]
+        if matched_candidates:
+            candidates = matched_candidates
+
     candidate_meta = [
         {
             "station_code": c["station_code"],
@@ -806,6 +838,8 @@ def build_weather_dataset(
             "coverage_ratio": c["coverage_ratio"],
             "missing_ratio": c["missing_ratio"],
             "available_variables": c["available_variables"],
+            "missing_day_count": c.get("missing_day_count", 0),
+            "missing_days": ", ".join(c.get("missing_days", [])[:12]),
         }
         for c in candidates
     ]
@@ -925,7 +959,7 @@ def build_weather_dataset(
         out_daily,
         enable_app_format,
         daily_req,
-        apply_precip_filter,
+        False,
         precip_threshold,
     )
 
