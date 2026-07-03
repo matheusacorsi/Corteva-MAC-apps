@@ -450,7 +450,7 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
                                         break
                                     cur_d += timedelta(days=1)
 
-                            first_moisture_arm = first_moisture_date.strftime("%d%b%y").lstrip("0") if first_moisture_date else ""
+                            first_moisture_arm = to_arm_date(first_moisture_date.strftime("%Y%m%d")) if first_moisture_date else ""
                             first_moisture_amt = ""
                             if first_moisture_date is not None:
                                 dkey_fm = first_moisture_date.strftime("%Y%m%d")
