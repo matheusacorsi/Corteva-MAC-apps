@@ -111,7 +111,7 @@ def get_precip_sum(start_d, end_d, data_dict):
 
 def to_arm_date(date_key):
     d = datetime.strptime(date_key, "%Y%m%d")
-    return d.strftime("%d%b%y").lstrip("0")
+    return d.strftime("%d-%b-%y").lstrip("0")
 
 # --- Streamlit UI Setup ---
 st.set_page_config(page_title="Weather2ARM", layout="wide", page_icon="🌦️")
