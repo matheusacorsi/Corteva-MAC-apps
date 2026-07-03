@@ -393,7 +393,7 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
                     arm_data.append([
                         to_arm_date(dt), "", prec_v, "mm" if prec_v else "", prec_v, "mm" if prec_v else "",
                         "", "", "RAIN" if prec and prec > 0 else "", "rain" if prec and prec > 0 else "", "", "", "", "",
-                        t_min, t_max, t_avg, "C" if t_avg else "", rh_min, rh_max, rh_avg, ws_min_kps, ws_max_kps, ws_avg_kps, "KPS" if ws_avg_kps else "",
+                        t_min, t_max, t_avg, "C" if t_avg else "", rh_min, rh_max, rh_avg, ws_min_kps, ws_max_kps, ws_avg_kps, "KPH" if ws_avg_kps else "",
                         "", "", "", "", "", "", "", "ENTERED", ""
                     ])
                 
@@ -563,7 +563,7 @@ if st.button("🚀 DOWNLOAD & PROCESS", type="primary", use_container_width=True
                 time_str = f"{str(r['hr']).split('.')[0].zfill(2)}:00"
                 arm_hr_data.append([
                     to_arm_date(r['date_key']), time_str, "", "", "", "", "", "", "", "", "", "", "", "",
-                    "", t_val, "C" if t_val else "", "", "", rh_val, "", "", ws_val, "KPS" if ws_val else "",
+                    "", t_val, "C" if t_val else "", "", "", rh_val, "", "", ws_val, "KPH" if ws_val else "",
                     "", "", "", "", "", "", "", "", "ENTERED", ""
                 ])
             df_hr = pd.DataFrame(arm_hr_data, columns=ARM_DISPLAY)
