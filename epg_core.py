@@ -93,6 +93,24 @@ DEFAULT_THRESHOLDS = {
     "g_amp_min": 0.50,
 }
 
+# Thresholds para o modo de features "avançado" (sinal padronizado por
+# IQR): frequências são invariantes à escala, mas amplitudes e nível médio
+# passam a ser expressos em unidades robustas (múltiplos de IQR), não Volts.
+# Valores iniciais calibrados a partir da distribuição observada em uma
+# gravação real de 8h de D. citri — ajuste conforme seu equipamento.
+DEFAULT_THRESHOLDS_STD = {
+    "np_amp_max": 0.9,
+    "c_freq": (11.5, 19.5),
+    "d_freq": (1.0, 3.5),
+    "d_amp_max": 2.5,
+    "e1_freq": (5.0, 7.5),
+    "e1_mean_max": -0.3,
+    "e2_freq": (3.0, 9.0),
+    "e2_amp_min": 5.0,
+    "g_freq": (5.0, 8.0),
+    "g_amp_min": 10.0,
+}
+
 
 # ---------------------------------------------------------------------------
 # Parsing de arquivos .DXX

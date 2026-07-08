@@ -19,6 +19,7 @@ import streamlit as st
 
 from epg_core import (
     DEFAULT_THRESHOLDS,
+    DEFAULT_THRESHOLDS_STD,
     WAVEFORM_INFO,
     classify_features,
     compute_runs,
@@ -27,6 +28,7 @@ from epg_core import (
     parse_epg_bytes,
     summarize_runs,
 )
+from epg_features import extract_features_advanced, feature_columns
 
 st.set_page_config(
     page_title="EPG Classifier — Diaphorina citri",
@@ -52,47 +54,82 @@ uploaded_files = st.sidebar.file_uploader(
 st.sidebar.markdown("---")
 st.sidebar.subheader("Parâmetros de análise")
 
+feature_method = st.sidebar.radio(
+    "Método de extração de features",
+    ["Avançado (estilo DiscoEPG)", "FFT + amplitude (legado)"],
+    help="O modo avançado remove deriva de linha de base, padroniza o sinal "
+    "de forma robusta (independente do ganho) e extrai 26 features "
+    "(estatísticas, espectrais e de wavelet). O modo legado usa apenas "
+    "frequência dominante (FFT) e amplitude absoluta em Volts.",
+)
+is_advanced = feature_method.startswith("Avançado")
+
 win_seconds = st.sidebar.slider("Tamanho da janela (s)", 1.0, 30.0, 5.0, 0.5)
 overlap = st.sidebar.slider("Sobreposição entre janelas", 0.0, 0.9, 0.5, 0.05)
 
+remove_baseline = True
+if is_advanced:
+    remove_baseline = st.sidebar.checkbox(
+        "Remover deriva de linha de base", value=True,
+        help="Subtrai uma mediana móvel lenta (~60s) para remover deriva do eletrodo.",
+    )
+
 st.sidebar.markdown("---")
+_default_th = DEFAULT_THRESHOLDS_STD if is_advanced else DEFAULT_THRESHOLDS
+_unit = "un. robustas (IQR)" if is_advanced else "V"
 with st.sidebar.expander("⚙️ Thresholds de classificação (avançado)"):
     st.caption(
-        "Os valores padrão seguem Bonani et al. (2010). Como o ganho do "
-        "amplificador não é conhecido a priori, ajuste a amplitude (em Volts) "
-        "conforme a calibração do seu equipamento."
+        f"Faixas de frequência seguem Bonani et al. (2010). As amplitudes/nível "
+        f"médio estão em **{_unit}**. "
+        + (
+            "No modo avançado o sinal é padronizado por IQR, tornando os "
+            "thresholds comparáveis entre gravações com ganhos diferentes."
+            if is_advanced
+            else "No modo legado dependem do ganho do amplificador — calibre "
+            "conforme seu equipamento."
+        )
     )
-    th = dict(DEFAULT_THRESHOLDS)
-    th["np_amp_max"] = st.number_input("Np: amplitude máxima (V)", value=DEFAULT_THRESHOLDS["np_amp_max"], step=0.01)
+    th = dict(_default_th)
+    th["np_amp_max"] = st.number_input(
+        f"Np: amplitude máxima ({_unit})", value=float(_default_th["np_amp_max"]), step=0.01, key="np_amp"
+    )
     c1, c2 = st.columns(2)
     th["c_freq"] = (
-        c1.number_input("C: freq. mínima (Hz)", value=DEFAULT_THRESHOLDS["c_freq"][0]),
-        c2.number_input("C: freq. máxima (Hz)", value=DEFAULT_THRESHOLDS["c_freq"][1]),
+        c1.number_input("C: freq. mínima (Hz)", value=float(_default_th["c_freq"][0]), key="c_lo"),
+        c2.number_input("C: freq. máxima (Hz)", value=float(_default_th["c_freq"][1]), key="c_hi"),
     )
     d1, d2 = st.columns(2)
     th["d_freq"] = (
-        d1.number_input("D: freq. mínima (Hz)", value=DEFAULT_THRESHOLDS["d_freq"][0]),
-        d2.number_input("D: freq. máxima (Hz)", value=DEFAULT_THRESHOLDS["d_freq"][1]),
+        d1.number_input("D: freq. mínima (Hz)", value=float(_default_th["d_freq"][0]), key="d_lo"),
+        d2.number_input("D: freq. máxima (Hz)", value=float(_default_th["d_freq"][1]), key="d_hi"),
     )
-    th["d_amp_max"] = st.number_input("D: amplitude máxima (V)", value=DEFAULT_THRESHOLDS["d_amp_max"], step=0.01)
+    th["d_amp_max"] = st.number_input(
+        f"D: amplitude máxima ({_unit})", value=float(_default_th["d_amp_max"]), step=0.01, key="d_amp"
+    )
     e1a, e1b = st.columns(2)
     th["e1_freq"] = (
-        e1a.number_input("E1: freq. mínima (Hz)", value=DEFAULT_THRESHOLDS["e1_freq"][0]),
-        e1b.number_input("E1: freq. máxima (Hz)", value=DEFAULT_THRESHOLDS["e1_freq"][1]),
+        e1a.number_input("E1: freq. mínima (Hz)", value=float(_default_th["e1_freq"][0]), key="e1_lo"),
+        e1b.number_input("E1: freq. máxima (Hz)", value=float(_default_th["e1_freq"][1]), key="e1_hi"),
     )
-    th["e1_mean_max"] = st.number_input("E1: tensão média máxima (V)", value=DEFAULT_THRESHOLDS["e1_mean_max"])
+    th["e1_mean_max"] = st.number_input(
+        f"E1: nível médio máx. ({_unit})", value=float(_default_th["e1_mean_max"]), key="e1_mean"
+    )
     e2a, e2b = st.columns(2)
     th["e2_freq"] = (
-        e2a.number_input("E2: freq. mínima (Hz)", value=DEFAULT_THRESHOLDS["e2_freq"][0]),
-        e2b.number_input("E2: freq. máxima (Hz)", value=DEFAULT_THRESHOLDS["e2_freq"][1]),
+        e2a.number_input("E2: freq. mínima (Hz)", value=float(_default_th["e2_freq"][0]), key="e2_lo"),
+        e2b.number_input("E2: freq. máxima (Hz)", value=float(_default_th["e2_freq"][1]), key="e2_hi"),
     )
-    th["e2_amp_min"] = st.number_input("E2: amplitude mínima (V)", value=DEFAULT_THRESHOLDS["e2_amp_min"], step=0.01)
+    th["e2_amp_min"] = st.number_input(
+        f"E2: amplitude mínima ({_unit})", value=float(_default_th["e2_amp_min"]), step=0.01, key="e2_amp"
+    )
     ga, gb = st.columns(2)
     th["g_freq"] = (
-        ga.number_input("G: freq. mínima (Hz)", value=DEFAULT_THRESHOLDS["g_freq"][0]),
-        gb.number_input("G: freq. máxima (Hz)", value=DEFAULT_THRESHOLDS["g_freq"][1]),
+        ga.number_input("G: freq. mínima (Hz)", value=float(_default_th["g_freq"][0]), key="g_lo"),
+        gb.number_input("G: freq. máxima (Hz)", value=float(_default_th["g_freq"][1]), key="g_hi"),
     )
-    th["g_amp_min"] = st.number_input("G: amplitude mínima (V)", value=DEFAULT_THRESHOLDS["g_amp_min"], step=0.01)
+    th["g_amp_min"] = st.number_input(
+        f"G: amplitude mínima ({_unit})", value=float(_default_th["g_amp_min"]), step=0.01, key="g_amp"
+    )
 
 st.sidebar.markdown("---")
 st.sidebar.caption(
@@ -172,12 +209,20 @@ with st.expander("ℹ️ Detalhes dos segmentos deste canal"):
 
 
 @st.cache_data(show_spinner="Extraindo features do sinal...")
-def _extract_cached(values_bytes, fs, win_seconds, overlap):
+def _extract_cached(values_bytes, fs, win_seconds, overlap, advanced, remove_baseline):
     values = np.frombuffer(values_bytes, dtype=np.float64)
+    if advanced:
+        return extract_features_advanced(
+            values, fs, win_seconds=win_seconds, overlap=overlap,
+            remove_baseline=remove_baseline,
+        )
     return extract_features(values, fs, win_seconds=win_seconds, overlap=overlap)
 
 
-feat_df = _extract_cached(channel.values.tobytes(), channel.sample_rate, win_seconds, overlap)
+feat_df = _extract_cached(
+    channel.values.tobytes(), channel.sample_rate, win_seconds, overlap,
+    is_advanced, remove_baseline,
+)
 feat_df = classify_features(feat_df, th)
 runs_df = compute_runs(feat_df)
 summary_df = summarize_runs(runs_df, channel.total_seconds)
@@ -196,8 +241,15 @@ if channel.start_date and channel.start_time:
 # Tabs de visualização
 # ---------------------------------------------------------------------------
 
-tab_overview, tab_timeline, tab_trace, tab_events, tab_export = st.tabs(
-    ["📊 Visão geral", "🕒 Linha do tempo (Gantt)", "📈 Traço do sinal", "📋 Eventos detalhados", "⬇️ Exportar"]
+tab_overview, tab_timeline, tab_trace, tab_features, tab_events, tab_export = st.tabs(
+    [
+        "📊 Visão geral",
+        "🕒 Linha do tempo (Gantt)",
+        "📈 Traço do sinal",
+        "🔬 Explorador de features",
+        "📋 Eventos detalhados",
+        "⬇️ Exportar",
+    ]
 )
 
 # --- Overview ---
@@ -357,6 +409,56 @@ with tab_trace:
         )
         fig_zoom.update_layout(xaxis_title="Tempo (min)", yaxis_title="Tensão (V)", height=350)
         st.plotly_chart(fig_zoom, use_container_width=True)
+
+# --- Explorador de features ---
+with tab_features:
+    st.subheader("Explorador de features por waveform")
+    if not is_advanced:
+        st.info(
+            "As features avançadas (estatísticas, espectrais e de wavelet) só "
+            "estão disponíveis no modo **Avançado (estilo DiscoEPG)**. "
+            "Selecione-o na barra lateral para explorá-las e calibrar os thresholds."
+        )
+    else:
+        feat_cols = [c for c in feature_columns(feat_df) if c not in ("waveform",)]
+        st.caption(
+            "Distribuição das features por waveform classificado. Útil para "
+            "calibrar thresholds: observe onde cada waveform se separa e ajuste "
+            "os limiares na barra lateral. Também é a base para treinar um "
+            "classificador supervisionado (ML)."
+        )
+        sel_feat = st.selectbox("Feature para inspecionar:", feat_cols, index=feat_cols.index("amp_p2p") if "amp_p2p" in feat_cols else 0)
+
+        # box plot da feature por waveform
+        plot_df = feat_df[[sel_feat, "waveform"]].copy()
+        fig_box = px.box(
+            plot_df,
+            x="waveform",
+            y=sel_feat,
+            color="waveform",
+            color_discrete_map={w: WAVEFORM_INFO[w]["color"] for w in WAVEFORM_INFO},
+            points="outliers",
+        )
+        fig_box.update_layout(height=400, showlegend=False, xaxis_title="", yaxis_title=sel_feat)
+        st.plotly_chart(fig_box, use_container_width=True)
+
+        # matriz de correlação entre features (amostra para performance)
+        st.markdown("##### Correlação entre features")
+        sample_n = min(3000, len(feat_df))
+        corr = feat_df[feat_cols].sample(sample_n, random_state=0).corr()
+        fig_corr = px.imshow(
+            corr,
+            color_continuous_scale="RdBu_r",
+            zmin=-1,
+            zmax=1,
+            aspect="auto",
+        )
+        fig_corr.update_layout(height=600)
+        st.plotly_chart(fig_corr, use_container_width=True)
+        st.caption(
+            "Features muito correlacionadas (|r|→1) são redundantes; para um "
+            "modelo de ML, considere manter apenas uma de cada grupo redundante."
+        )
 
 # --- Eventos detalhados ---
 with tab_events:
