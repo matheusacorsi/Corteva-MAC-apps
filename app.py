@@ -11,6 +11,7 @@ Rode com: streamlit run app.py
 import io
 from datetime import datetime, timedelta
 
+import joblib
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -64,6 +65,33 @@ feature_method = st.sidebar.radio(
 )
 is_advanced = feature_method.startswith("Avançado")
 
+st.sidebar.markdown("---")
+st.sidebar.subheader("🤖 Modelo treinado (opcional)")
+uploaded_model = st.sidebar.file_uploader(
+    "Envie um modelo treinado (.joblib)",
+    type=["joblib"],
+    help="Gerado por train_model.py a partir de arquivos .DXX + .ANA anotados. "
+    "Se enviado, substitui a classificação heurística por predições do modelo.",
+)
+use_ml_model = False
+ml_bundle = None
+if uploaded_model is not None:
+    try:
+        ml_bundle = joblib.load(io.BytesIO(uploaded_model.getvalue()))
+        use_ml_model = True
+        st.sidebar.success(
+            f"Modelo carregado ({len(ml_bundle['feature_columns'])} features, "
+            f"classes: {', '.join(ml_bundle['label_encoder'].classes_)})"
+        )
+        if not is_advanced:
+            st.sidebar.warning(
+                "⚠️ O modelo foi treinado com o modo Avançado. Selecione "
+                "'Avançado (estilo DiscoEPG)' acima para que as features "
+                "sejam compatíveis."
+            )
+    except Exception as e:
+        st.sidebar.error(f"Não foi possível carregar o modelo: {e}")
+
 win_seconds = st.sidebar.slider("Tamanho da janela (s)", 1.0, 30.0, 5.0, 0.5)
 overlap = st.sidebar.slider("Sobreposição entre janelas", 0.0, 0.9, 0.5, 0.05)
 
@@ -77,7 +105,12 @@ if is_advanced:
 st.sidebar.markdown("---")
 _default_th = DEFAULT_THRESHOLDS_STD if is_advanced else DEFAULT_THRESHOLDS
 _unit = "un. robustas (IQR)" if is_advanced else "V"
-with st.sidebar.expander("⚙️ Thresholds de classificação (avançado)"):
+with st.sidebar.expander("⚙️ Thresholds de classificação (avançado)", expanded=not use_ml_model):
+    if use_ml_model:
+        st.caption(
+            "🤖 Um modelo de ML está carregado e estes thresholds estão "
+            "sendo **ignorados** — a classificação vem das predições do modelo."
+        )
     st.caption(
         f"Faixas de frequência seguem Bonani et al. (2010). As amplitudes/nível "
         f"médio estão em **{_unit}**. "
@@ -223,7 +256,29 @@ feat_df = _extract_cached(
     channel.values.tobytes(), channel.sample_rate, win_seconds, overlap,
     is_advanced, remove_baseline,
 )
-feat_df = classify_features(feat_df, th)
+
+if use_ml_model and is_advanced:
+    model = ml_bundle["model"]
+    le = ml_bundle["label_encoder"]
+    model_feat_cols = ml_bundle["feature_columns"]
+    missing_cols = [c for c in model_feat_cols if c not in feat_df.columns]
+    if missing_cols:
+        st.error(
+            f"O modelo espera features que não foram encontradas: {missing_cols}. "
+            "Verifique se o tamanho de janela/sobreposição são compatíveis com o "
+            "treino, ou use a classificação heurística."
+        )
+        st.stop()
+    X_pred = feat_df[model_feat_cols].to_numpy()
+    y_pred = model.predict(X_pred)
+    feat_df = feat_df.copy()
+    feat_df["waveform"] = le.inverse_transform(y_pred)
+    classification_mode_label = "🤖 Modelo de ML treinado"
+else:
+    feat_df = classify_features(feat_df, th)
+    classification_mode_label = "📐 Heurística (thresholds)"
+st.info(f"Modo de classificação ativo: **{classification_mode_label}**")
+
 runs_df = compute_runs(feat_df)
 summary_df = summarize_runs(runs_df, channel.total_seconds)
 

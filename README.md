@@ -71,6 +71,114 @@ selecionar features para um modelo de ML.
 Modo original: apenas frequência dominante (FFT) e amplitude pico-a-pico
 absoluta em Volts. Mantido para comparação A/B.
 
+## Treinando um classificador supervisionado (ML) com anotações .ANA do Stylet+
+
+Se você já tem gravações anotadas visualmente no Stylet+/Stylet+a (arquivos
+`.ANA`), pode treinar um classificador supervisionado que tende a superar a
+heurística de thresholds — este é o caminho recomendado para produção.
+
+### Formato do arquivo `.ANA`
+
+Texto tab-delimitado, codificado em **UTF-16LE** (com BOM), 3 colunas por
+linha: **código do waveform**, **tempo de início (s)**, **voltagem de saída
+(mV)**. Cada linha é um evento (clique manual no Stylet+): o código vale do
+seu tempo de início até o início do próximo evento — ou seja, **é um rótulo
+por evento, não por amostra**, e `epg_ana.py` expande isso em um rótulo
+contínuo alinhado com as janelas de features.
+
+**Importante:** os códigos numéricos dos botões são configuráveis por
+experimento no Stylet+ (não há um mapeamento universal). Ajuste
+`DEFAULT_CODE_MAP` em `epg_ana.py` para bater com a configuração de botões
+usada nas suas anotações, ou passe seu próprio `code_map` ao chamar as
+funções.
+
+### Estrutura de pastas esperada
+
+Coloque em uma pasta os arquivos `.DXX` e o `.ANA` correspondente, com o
+**mesmo nome-base**:
+
+```
+dataset/
+  PsilideoMudaT1-3-ch6.D01
+  PsilideoMudaT1-3-ch6.D02
+  ...
+  PsilideoMudaT1-3-ch6.D09
+  PsilideoMudaT1-3-ch6.ANA   <- mesma anotação p/ todos os segmentos do canal
+  PsilideoMudaT1-4-ch2.D01
+  ...
+  PsilideoMudaT1-4-ch2.ANA
+```
+
+### Rodando o treino
+
+```bash
+python train_model.py --data-dir dataset/ --out modelo_epg.joblib
+```
+
+O script (`train_model.py`):
+
+1. Agrupa os `.DXX` por canal/gravação e localiza o `.ANA` correspondente.
+2. Extrai as 26 features avançadas (`epg_features.extract_features_advanced`)
+   para cada gravação.
+3. Expande as anotações de evento em rótulo contínuo e rotula cada janela de
+   features (`epg_ana.build_labeled_dataset`).
+4. Faz o split treino/teste **por gravação** (`GroupShuffleSplit`), nunca por
+   janela isolada — janelas do mesmo inseto são autocorrelacionadas, e um
+   split aleatório por janela vazaria informação e infla artificialmente a
+   acurácia.
+5. Treina um **XGBoost** (100 árvores, learning rate 0.3, profundidade 6 —
+   configuração usada por Willett et al. 2016 para *D. citri*), com pesos de
+   classe para compensar o desbalanceamento natural (Np/C dominantes, E1/D
+   raros).
+6. Reporta `classification_report`, matriz de confusão e F1-macro no conjunto
+   de teste (gravações nunca vistas no treino).
+7. Salva o modelo, o label encoder e as colunas de feature em um único
+   `.joblib`, pronto para reuso.
+
+### Resultado real (1 inseto anotado, D. citri, canal 6, 8,1h)
+
+Treinamos com a anotação real deste dataset (mapeamento de código confirmado:
+1=Np, 2=C, 3=D, 4=E1, 5=E2, 7=G — código 6 não usado, código 99 é marcador de
+fim de arquivo e é automaticamente excluído). Distribuição real de classes:
+Np 61,7% · E2 20,6% · C 10,3% · G 5,2% · D 1,2% · E1 1,0%.
+
+Como só havia 1 gravação anotada, `GroupShuffleSplit` (split por inseto) não é
+aplicável — o script detecta isso automaticamente e usa um **split por blocos
+temporais alternados** (distribuídos por toda a gravação) como aproximação,
+emitindo um aviso explícito de que isso não valida generalização entre
+insetos diferentes.
+
+| Waveform | F1-score | Observação |
+|---|---|---|
+| Np | 0,98 | Excelente |
+| E2 | 0,98 | Excelente |
+| C  | 0,93 | Muito bom |
+| G  | 0,93 | Muito bom — a heurística de thresholds nunca detectava G neste canal |
+| E1 | 0,70 | Razoável, poucas amostras (20 no teste) |
+| D  | 0,20 | Fraco — confundido com C, E2 e Np |
+
+F1-macro: 0,786. O desempenho fraco em D é esperado e biologicamente
+coerente: é a waveform mais breve (~46s de média na literatura), e a
+confusão com waveforms adjacentes é o mesmo padrão relatado pelo DiscoEPG
+para waveforms transitórias curtas (ex: pd em afídeos).
+
+**Recomendação para produção:** anote mais insetos (idealmente de diferentes
+sessões/dias) antes de considerar este modelo validado — um modelo treinado
+em 1 único inseto captura tanto o padrão biológico quanto idiossincrasias
+daquele indivíduo específico (posição do eletrodo, ganho daquela sessão),
+e pode não generalizar.
+
+### Usando o modelo treinado no app Streamlit
+
+O `app.py` agora aceita o upload de um modelo `.joblib` (gerado por
+`train_model.py`) diretamente na barra lateral, em **🤖 Modelo treinado
+(opcional)**. Quando um modelo é carregado:
+- A classificação heurística (thresholds) é ignorada — os waveforms exibidos
+  em todas as abas vêm das predições do modelo.
+- É necessário estar no modo **Avançado (estilo DiscoEPG)**, com o mesmo
+  tamanho de janela/sobreposição usados no treino, para que as 26 features
+  batam com o que o modelo espera.
+
 ## Metodologia e limitações
 
 A classificação é feita por uma **heurística automática de primeira
