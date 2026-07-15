@@ -1,4 +1,18 @@
-# Streamlit Community Cloud reads this file. It installs the epg_tool
-# package itself (editable) plus its "app" extra (Streamlit) -- the
-# actual dependency list lives in pyproject.toml, this just points there.
--e .[app]
+# Plain dependency list (mirrors pyproject.toml's [project.dependencies]
+# + the "app" extra) instead of an editable install of epg_tool itself.
+# `-e .` resolves relative to wherever the installer's CWD ends up, which
+# on Streamlit Community Cloud is the repo root -- not necessarily the
+# folder this file lives in when the app is nested in a subfolder of a
+# monorepo. streamlit_app.py adds its own src/ to sys.path instead, which
+# works the same whether it's at the repo root or nested.
+numpy
+pandas
+scipy
+PyWavelets
+scikit-learn
+xgboost
+matplotlib
+typer
+pyyaml
+openpyxl
+streamlit
