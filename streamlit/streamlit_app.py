@@ -12,6 +12,15 @@ profile, upload a recording, get predictions back.
 from __future__ import annotations
 
 import io
+import sys
+from pathlib import Path
+
+# Make epg_tool importable without a package install -- works whether
+# this file sits at the repo root or nested in a monorepo subfolder,
+# since it's resolved relative to this file's own location, not the
+# installer's working directory (see requirements.txt for why that
+# distinction matters here).
+sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 import matplotlib
 
