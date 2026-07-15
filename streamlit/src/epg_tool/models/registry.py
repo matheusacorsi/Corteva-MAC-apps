@@ -10,6 +10,15 @@ from epg_tool.species.profile import SpeciesProfile
 
 from .tabular import TabularModel
 
+# model_registry paths in species YAML files (e.g. "models/x/rf.joblib")
+# are relative to the project root -- anchor them at wherever the
+# epg_tool package itself physically lives on disk, not the process's
+# CWD. CWD varies by how the app is launched (Streamlit Cloud runs
+# installers from the repo root even when the app is nested in a
+# monorepo subfolder), so a bare relative Path(raw) silently resolves
+# to the wrong location in that case.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+
 
 def model_path_for(profile: SpeciesProfile, model_type: str) -> Path:
     raw = profile.model_registry.get(model_type)
@@ -19,7 +28,8 @@ def model_path_for(profile: SpeciesProfile, model_type: str) -> Path:
             f"model type {model_type!r}. Add one under model_registry in "
             f"its YAML file."
         )
-    return Path(raw)
+    path = Path(raw)
+    return path if path.is_absolute() else _PROJECT_ROOT / path
 
 
 def load_model(profile: SpeciesProfile, model_type: str) -> TabularModel:

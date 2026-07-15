@@ -45,6 +45,15 @@ def test_tabular_model_save_and_load_roundtrip(tmp_path):
     np.testing.assert_array_equal(loaded.predict(X), model.predict(X))
 
 
+def test_tabular_model_load_from_bytes_roundtrip(tmp_path):
+    X, y = _separable_dataset()
+    model = random_forest_model(n_estimators=10).fit(X, y)
+    path = tmp_path / "model.joblib"
+    model.save(path)
+    loaded = TabularModel.load_from_bytes(path.read_bytes())
+    np.testing.assert_array_equal(loaded.predict(X), model.predict(X))
+
+
 def test_feature_importances_indexed_by_name():
     X, y = _separable_dataset()
     model = random_forest_model(n_estimators=10).fit(X, y)
@@ -88,3 +97,24 @@ def test_registry_missing_file_raises(tmp_path):
     profile = _dummy_profile(tmp_path / "does_not_exist.joblib")
     with pytest.raises(FileNotFoundError):
         load_model(profile, "random_forest")
+
+
+def test_model_path_for_anchors_relative_paths_to_project_root(monkeypatch, tmp_path):
+    """model_registry paths in species YAML are relative to wherever the
+    epg_tool package lives on disk, not the process's CWD -- regression
+    test for a bug where a bare Path(raw) resolved against CWD and
+    silently missed the model when deployed in a monorepo subfolder."""
+    from epg_tool.models.registry import _PROJECT_ROOT
+
+    profile = SpeciesProfile(
+        name="dummy_relative",
+        common_name="dummy_relative",
+        reference="",
+        waveforms=[WaveformDef(code=1, label="Np")],
+        sentinel_codes=frozenset({99}),
+        model_registry={"random_forest": "models/diaphorina_citri/random_forest.joblib"},
+    )
+    monkeypatch.chdir(tmp_path)  # simulate running from an unrelated CWD
+    resolved = model_path_for(profile, "random_forest")
+    assert resolved == _PROJECT_ROOT / "models/diaphorina_citri/random_forest.joblib"
+    assert resolved != tmp_path / "models/diaphorina_citri/random_forest.joblib"

@@ -56,6 +56,16 @@ class TabularModel:
 
         return joblib.load(Path(path))
 
+    @classmethod
+    def load_from_bytes(cls, data: bytes) -> "TabularModel":
+        """Load a model already in memory (e.g. a Streamlit upload
+        buffer) instead of from a filesystem path."""
+        import io
+
+        import joblib
+
+        return joblib.load(io.BytesIO(data))
+
 
 def random_forest_model(**kwargs) -> TabularModel:
     from sklearn.ensemble import RandomForestClassifier

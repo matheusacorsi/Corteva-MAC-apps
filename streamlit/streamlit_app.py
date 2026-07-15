@@ -36,13 +36,14 @@ from epg_tool.export.parameters import (
     sequential_parameters,
     transition_matrix,
 )
-from epg_tool.export.plotting import plot_session
+from epg_tool.export.plotting import plot_session, plot_time_distribution_pies
 from epg_tool.features import extract_features, make_inference_windows, make_windows
 from epg_tool.features.baseline import estimate_np_baseline
 from epg_tool.features.windowing import build_sample_labels
 from epg_tool.io.session import EPGSession, build_session_from_bytes
 from epg_tool.models.registry import has_trained_model, load_model
 from epg_tool.models.rules import RuleBasedClassifier
+from epg_tool.models.tabular import TabularModel
 from epg_tool.species.profile import list_profiles, load_profile
 from epg_tool.training.evaluate import evaluate
 
@@ -62,15 +63,39 @@ with st.sidebar:
 
     model_options = ["rule_based", "random_forest", "xgboost"]
     model_type = st.selectbox("Classifier", model_options)
-    if model_type != "rule_based" and not has_trained_model(profile, model_type):
-        st.warning(
-            f"No trained {model_type!r} model found for {species_name!r} yet -- "
-            "falling back to the rule-based baseline. Train one with "
-            f"`epg-tool train <data-folder> --species {species_name} --model {model_type}`."
+
+    uploaded_model: TabularModel | None = None
+    if model_type != "rule_based":
+        model_upload = st.file_uploader(
+            f"Optional: upload a trained {model_type} model (.joblib) instead of the bundled one",
+            type=["joblib"],
+            key=f"model_upload_{model_type}",
         )
-        model_type = "rule_based"
+        if model_upload is not None:
+            model_bytes = model_upload.getvalue()
+            try:
+                uploaded_model = TabularModel.load_from_bytes(model_bytes)
+                st.caption(f"Using uploaded model ({len(model_bytes) / 1e6:.1f} MB)")
+            except Exception as exc:
+                st.error(f"Couldn't load that model file: {exc}")
+        elif not has_trained_model(profile, model_type):
+            st.warning(
+                f"No trained {model_type!r} model bundled for {species_name!r} and none "
+                "uploaded -- falling back to the rule-based baseline. Train one with "
+                f"`epg-tool train <data-folder> --species {species_name} --model {model_type}`, "
+                "or upload a `.joblib` file above."
+            )
+            model_type = "rule_based"
 
     window_s = st.number_input("Window size (s)", min_value=0.1, value=1.0, step=0.5)
+
+
+def get_classifier(model_type: str, uploaded_model: TabularModel | None, profile):
+    if model_type == "rule_based":
+        return RuleBasedClassifier(profile)
+    if uploaded_model is not None:
+        return uploaded_model
+    return load_model(profile, model_type)
 
 st.subheader("1. Upload recording")
 col1, col2 = st.columns(2)
@@ -123,7 +148,7 @@ if st.button("Run classification", type="primary"):
     with st.spinner(f"Extracting features for {len(windows)} windows..."):
         X = pd.DataFrame([extract_features(w.samples, session.sample_rate_hz, context=context) for w in windows])
 
-    clf = RuleBasedClassifier(profile) if model_type == "rule_based" else load_model(profile, model_type)
+    clf = get_classifier(model_type, uploaded_model, profile)
     pred_codes = clf.predict(X)
 
     predicted_segments = predictions_to_labeled_segments(windows, pred_codes, session.sample_rate_hz)
@@ -167,6 +192,13 @@ if has_ground_truth:
         st.pyplot(fig)
         plt.close(fig)
 
+pie_sessions = {"Predicted": predicted_session}
+if has_ground_truth:
+    pie_sessions["Ground truth"] = session
+fig = plot_time_distribution_pies(pie_sessions, profile)
+st.pyplot(fig)
+plt.close(fig)
+
 pred_df = predicted_session.to_dataframe()
 pred_df["label"] = pred_df["code"].map(profile.code_to_label)
 st.markdown("**Predicted segments**")
@@ -179,7 +211,7 @@ if has_ground_truth:
     gt_X = pd.DataFrame(
         [extract_features(w.samples, session.sample_rate_hz, context=gt_context) for w in gt_windows]
     )
-    clf = RuleBasedClassifier(profile) if model_type == "rule_based" else load_model(profile, model_type)
+    clf = get_classifier(model_type, uploaded_model, profile)
     gt_pred = clf.predict(gt_X)
     gt_true = np.array([w.label_code for w in gt_windows])
 
