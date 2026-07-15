@@ -1,0 +1,120 @@
+# Species profile: Diaphorina citri (Asian citrus psyllid) on Citrus sinensis
+# Waveform set, code mapping, and rule-based thresholds per:
+#   Bonani et al. (2010), "Characterization of electrical penetration graphs
+#   of the Asian citrus psyllid, Diaphorina citri, in sweet orange
+#   seedlings," Entomologia Experimentalis et Applicata 134:35-49. Table 1.
+#
+# Numeric codes verified against a real Stylet+ .ANA export
+# (PsilideoMudaT1-3-ch6_.ANA): codes 1,2,3,4,5,7 observed, plus the
+# universal end-of-recording sentinel 99. Code 3 is a relabeling of the
+# generic Stylet+ slot (normally "E1e" for aphids) as "D" -- the
+# psyllid-specific waveform Bonani et al. describe as short (mean ~46s)
+# and always occurring between C and E1, matching both the numeric
+# position and observed durations in the sample file.
+
+name: diaphorina_citri
+common_name: "Asian citrus psyllid (Diaphorina citri) on Citrus sinensis"
+reference: "Bonani et al. 2010, Entomologia Experimentalis et Applicata 134:35-49"
+
+sentinel_codes: [99]
+
+waveforms:
+  - code: 1
+    label: Np
+    description: Non-probing
+    color: "#b9b8b2"  # neutral (baseline "no probe" state, not a categorical series)
+  - code: 2
+    label: C
+    description: >
+      Stylet pathway through epidermis/parenchyma; salivary sheath
+      secretion and other stylet pathway activities.
+    color: "#2a78d6"  # categorical slot 1 (blue)
+  - code: 3
+    label: D
+    description: >
+      First contact with phloem (psyllid-specific waveform, not reported
+      for other Sternorrhyncha); always immediately followed by E1.
+    color: "#1baf7a"  # categorical slot 2 (aqua)
+  - code: 4
+    label: E1
+    description: Putative phloem salivation.
+    color: "#eda100"  # categorical slot 3 (yellow)
+  - code: 5
+    label: E2
+    description: Phloem sap ingestion.
+    color: "#008300"  # categorical slot 4 (green)
+  - code: 7
+    label: G
+    description: Probable xylem sap ingestion.
+    color: "#4a3aa7"  # categorical slot 5 (violet)
+
+# Rule-based thresholds generalizing Bonani et al. Table 1. Amplitude is
+# expressed as % of the 5V full-scale range (only meaningful for
+# waveform components with a dominant resistive/R origin -- Table 1
+# footnote 1); components with a dominant electromotive-force (emf)
+# origin have no defined amplitude range and are marked null.
+rule_based_thresholds:
+  Np:
+    voltage_level: baseline
+    electrical_origin: null
+  C:
+    amplitude_pct: [null, 45]  # "45" reported as a single medium value, not a range
+    frequency_hz: [11.5, 19.0]
+    voltage_level: extracellular
+    electrical_origin: resistive
+  D:
+    frequency_hz: [1.0, 3.5]
+    amplitude_pct: null
+    voltage_level: extracellular
+    electrical_origin: emf
+  E1:
+    frequency_hz: [5.0, 7.5]
+    amplitude_pct: null
+    voltage_level: intracellular
+    electrical_origin: emf
+  E2:
+    components:
+      waves:
+        frequency_hz: [3.0, 8.0]
+        amplitude_pct: null
+        voltage_level: intracellular
+        electrical_origin: emf
+      peaks:
+        frequency_hz: [3.0, 9.0]
+        amplitude_pct: [10, 40]
+        voltage_level: intracellular
+        electrical_origin: resistive
+  G:
+    components:
+      waves:
+        frequency_hz: [5.0, 7.0]
+        amplitude_pct: null
+        voltage_level: extracellular
+        electrical_origin: emf
+      peaks:
+        frequency_hz: [6.0, 8.0]
+        amplitude_pct: [50, 90]
+        voltage_level: extracellular
+        electrical_origin: resistive
+
+# Paths are relative to the repo root (wherever `epg-tool train` /
+# the Streamlit app is run from). rule_based needs no artifact; cnn1d
+# is left null until the optional torch upgrade path is implemented.
+model_registry:
+  rule_based: null
+  random_forest: models/diaphorina_citri/random_forest.joblib
+  xgboost: models/diaphorina_citri/xgboost.joblib
+  cnn1d: null
+
+# Which EPG-Calc / Backus (2007) style non-sequential and Sarria (2009)
+# style sequential parameters to compute for this species (Tables 2 & 3).
+parameters:
+  nonsequential:
+    - n_events
+    - total_duration
+    - mean_duration
+    - proportion_individuals
+  sequential:
+    - n_probes
+    - time_to_first_event
+    - transition_matrix

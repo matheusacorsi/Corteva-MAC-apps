@@ -1,0 +1,35 @@
+[project]
+name = "epg-tool"
+version = "0.1.0"
+description = "EPG waveform classification tool for insect probing/feeding behavior"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "PyWavelets",
+    "scikit-learn",
+    "xgboost",
+    "matplotlib",
+    "typer",
+    "pyyaml",
+    "openpyxl",
+]
+
+[project.optional-dependencies]
+deep = ["torch"]
+dev = ["pytest"]
+app = ["streamlit"]
+
+[project.scripts]
+epg-tool = "epg_tool.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

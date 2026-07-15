@@ -1,0 +1,4 @@
+# Streamlit Community Cloud reads this file. It installs the epg_tool
+# package itself (editable) plus its "app" extra (Streamlit) -- the
+# actual dependency list lives in pyproject.toml, this just points there.
+-e .[app]
